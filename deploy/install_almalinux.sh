@@ -239,7 +239,7 @@ ExecStart=${HERMES_VENV}/bin/hermes gateway
 Restart=always
 RestartSec=10
 KillSignal=SIGINT
-TimeoutStopSec=30
+TimeoutStopSec=240
 
 [Install]
 WantedBy=multi-user.target

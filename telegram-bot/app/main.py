@@ -34,6 +34,9 @@ def configure_logging(level: str) -> None:
         level=getattr(logging, level, logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("telegram.request").setLevel(logging.WARNING)
 
 
 async def post_init(application: Application) -> None:
