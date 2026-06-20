@@ -26,8 +26,8 @@ logs/
 outputs/
 
 # Local reference/upstream clones
-_reference/
-hermes-agent/
+/_reference/
+/hermes-agent/
 
 # OS/editor noise
 .DS_Store
