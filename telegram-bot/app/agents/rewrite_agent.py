@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +36,22 @@ class RewriteAgent:
             system_prompt=self._system_prompt(),
             user_prompt=self._user_prompt(post, review_result),
         )
-        return self.parse_result(raw_text, expected_target_ids=post.target_channel_ids)
+        result = self.parse_result(raw_text, expected_target_ids=post.target_channel_ids)
+        if len(result.posts) <= 1 or _posts_are_distinct(result.posts):
+            return result
+
+        repair_raw_text = await self.hermes_client.chat_completion(
+            system_prompt=self._system_prompt(),
+            user_prompt=self._repair_user_prompt(post, review_result, result),
+        )
+        repair_result = self.parse_result(
+            repair_raw_text,
+            expected_target_ids=post.target_channel_ids,
+        )
+        if _posts_are_distinct(repair_result.posts):
+            return repair_result
+
+        return result
 
     def _system_prompt(self) -> str:
         return (
@@ -45,6 +62,11 @@ class RewriteAgent:
             "Quy tac runtime:\n"
             "- Tao dung 1 bai cho moi target_channel_id duoc cung cap.\n"
             "- So bai phai bang target_channel_count.\n"
+            "- Neu co nhieu target_channel_id, moi bai phai la mot bien the text thuc su khac nhau.\n"
+            "- Khong duoc chi doi CTA, emoji, xuong dong, hoac vai tu nho giua cac bai.\n"
+            "- Moi bien the phai doi hook, goc viet, cau truc cau, thu tu y va cach dien dat.\n"
+            "- Goi y bien the: recap ket qua, bai hoc ky luat, execution checklist, market insight.\n"
+            "- Do tuong dong giua 2 bai phai thap; giu facts/gia/entry/SL/TP/pips chinh xac.\n"
             "- Moi bai <= 200 tu, co hook ro, noi dung gon, CTA text thuan.\n"
             "- Moi bai BAT BUOC co 1-3 emoji/icon lien quan; toi da 4 emoji/icon.\n"
             "- Chi dat emoji/icon o hook, bullet diem nhan, hoac truoc CTA neu phu hop.\n"
@@ -82,8 +104,35 @@ class RewriteAgent:
         return (
             "Hay viet lai bai Telegram nay thanh cac bai X/Twitter rieng biet.\n"
             "Moi target_channel_id nhan dung 1 bai.\n"
+            "Neu co nhieu target, cac bai phai la cac bien the doc lap: khac hook, khac cau truc, khac wording.\n"
+            "Khong duoc tao cac bai gan nhu giong nhau roi chi doi CTA.\n"
             "Input JSON:\n"
             f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+        )
+
+    def _repair_user_prompt(
+        self,
+        post: PostObject,
+        review_result: ReviewResult,
+        previous_result: RewriteResult,
+    ) -> str:
+        previous_payload = {
+            "posts": [
+                {
+                    "target_channel_id": item.target_channel_id,
+                    "text": item.text,
+                }
+                for item in previous_result.posts
+            ]
+        }
+        return (
+            f"{self._user_prompt(post, review_result)}\n\n"
+            "Ket qua truoc do bi loai vi cac bai qua giong nhau.\n"
+            "Hay viet lai TOAN BO posts tu dau, khong sua nhe tren ban cu.\n"
+            "Moi post can khac ro hook, goc nhin, cau truc cau va thu tu trien khai y.\n"
+            "Van giu nguyen facts, gia, entry, SL, TP, pips va dung target_channel_id.\n"
+            "Ket qua truoc do:\n"
+            f"{json.dumps(previous_payload, ensure_ascii=False, indent=2)}"
         )
 
     @staticmethod
@@ -221,6 +270,32 @@ def _prefix_first_matching_line(lines: list[str], *, pattern: str, icon: str) ->
         leading_space = line[: len(line) - len(line.lstrip())]
         lines[index] = f"{leading_space}{icon} {line.lstrip()}"
         return
+
+
+def _posts_are_distinct(posts: list[RewritePost]) -> bool:
+    for index, left in enumerate(posts):
+        for right in posts[index + 1 :]:
+            if _text_similarity(left.text, right.text) >= 0.78:
+                return False
+    return True
+
+
+def _text_similarity(left: str, right: str) -> float:
+    return SequenceMatcher(
+        None,
+        _normalize_for_similarity(left),
+        _normalize_for_similarity(right),
+    ).ratio()
+
+
+def _normalize_for_similarity(text: str) -> str:
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(char for char in text if unicodedata.category(char) != "Mn")
+    text = text.lower()
+    text = re.sub(r"\b(?:link in bio|check my profile)\b", " ", text)
+    text = re.sub(r"[^\w\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
 def _choose_icon(text: str) -> str:
