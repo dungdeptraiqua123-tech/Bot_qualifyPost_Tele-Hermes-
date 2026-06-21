@@ -183,22 +183,32 @@ class RewriteAgent:
 
 def _loads_json_payload(raw_text: str) -> Any:
     text = _strip_code_fence(raw_text.strip())
+    decoder = json.JSONDecoder()
+
     try:
-        return json.loads(text)
+        payload, _ = decoder.raw_decode(text)
+        if _is_rewrite_payload(payload):
+            return payload
     except json.JSONDecodeError:
         pass
 
-    object_start = text.find("{")
-    object_end = text.rfind("}")
-    if object_start != -1 and object_end != -1 and object_end > object_start:
-        return json.loads(text[object_start : object_end + 1])
-
-    array_start = text.find("[")
-    array_end = text.rfind("]")
-    if array_start != -1 and array_end != -1 and array_end > array_start:
-        return json.loads(text[array_start : array_end + 1])
+    for index, char in enumerate(text):
+        if char not in "{[":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if _is_rewrite_payload(payload):
+            return payload
 
     raise RuntimeError("Rewrite Agent did not return valid JSON.")
+
+
+def _is_rewrite_payload(payload: Any) -> bool:
+    if isinstance(payload, dict):
+        return isinstance(payload.get("posts"), list)
+    return isinstance(payload, list)
 
 
 def _strip_code_fence(text: str) -> str:
