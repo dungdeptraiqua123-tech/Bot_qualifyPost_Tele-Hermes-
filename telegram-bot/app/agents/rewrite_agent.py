@@ -71,10 +71,13 @@ class RewriteAgent:
             "- Moi bai BAT BUOC co 1-3 emoji/icon lien quan; toi da 4 emoji/icon.\n"
             "- Chi dat emoji/icon o hook, bullet diem nhan, hoac truoc CTA neu phu hop.\n"
             "- Khong spam emoji, khong lap chuoi icon, khong thay so/gia/SL/TP bang icon.\n"
-            "- Moi bai bat buoc ket thuc bang CTA co 2 phan: ly do/loi ich + Link in bio hoac Check my profile.\n"
+            "- Moi bai bat buoc co CTA gan cuoi bai gom 2 phan: ly do/loi ich + Link in bio hoac Check my profile.\n"
             "- Vi du CTA: Need 1:1 guidance on entries and risk? Link in bio.\n"
             "- Vi du CTA: Want 24/7 market support and cleaner trade plans? Check my profile.\n"
             "- CTA khong duoc hua loi nhuan, khong cam ket winrate, khong tao cam giac dam bao ket qua.\n"
+            "- Dong cuoi cung cua moi bai bat buoc la 2-4 hashtag phu hop voi noi dung.\n"
+            "- Hashtag viet khong dau, uu tien tieng Anh, khong spam, khong hashtag chung chung qua muc.\n"
+            "- Vi du hashtag: #XAUUSD #GoldTrading #ForexSignals #RiskManagement.\n"
             "- Khong chen link Telegram, khong @handle, khong keu goi DM.\n"
             "- Khong bia so lieu moi. Neu la signal, giu nguyen entry/SL/TP/gia.\n"
             "- Bot se tu gui media goc sau, nen JSON chi can text.\n\n"
@@ -110,6 +113,7 @@ class RewriteAgent:
             "Neu co nhieu target, cac bai phai la cac bien the doc lap: khac hook, khac cau truc, khac wording.\n"
             "Khong duoc tao cac bai gan nhu giong nhau roi chi doi CTA.\n"
             "CTA cuoi bai phai cho nguoi doc mot ly do cu the de bam vao profile/bio.\n"
+            "Dong cuoi cung phai co 2-4 hashtag phu hop voi bai viet.\n"
             "Input JSON:\n"
             f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
         )
@@ -157,7 +161,9 @@ class RewriteAgent:
             posts.append(
                 RewritePost(
                     target_channel_id=int(target_channel_id),
-                    text=_style_required_icons(_style_value_cta(text.strip())),
+                    text=_style_required_icons(
+                        _style_required_hashtags(_style_value_cta(text.strip()))
+                    ),
                 )
             )
 
@@ -212,6 +218,8 @@ def _style_value_cta(text: str) -> str:
         line = lines[index].strip()
         if not line:
             continue
+        if _is_hashtag_line(line):
+            continue
         anchor = _extract_cta_anchor(line)
         if not anchor:
             return text
@@ -222,6 +230,21 @@ def _style_value_cta(text: str) -> str:
         lines[index] = f"{leading_space}{_build_value_cta(anchor, text)}"
         return "\n".join(lines)
     return text
+
+
+def _style_required_hashtags(text: str) -> str:
+    lines = [line.rstrip() for line in text.splitlines()]
+    selected = _select_hashtags(text)
+
+    while lines and not lines[-1].strip():
+        lines.pop()
+    while lines and _is_hashtag_line(lines[-1].strip()):
+        lines.pop()
+
+    if not lines:
+        return " ".join(selected)
+
+    return "\n".join([*lines, "", " ".join(selected)])
 
 
 def _extract_cta_anchor(line: str) -> str | None:
@@ -276,6 +299,61 @@ def _cta_templates_for(text: str) -> list[str]:
         "Want market updates, risk notes, and cleaner plans? {anchor}.",
         "Need 24/7 support around trade planning? {anchor}.",
     ]
+
+
+def _select_hashtags(text: str) -> list[str]:
+    existing = [_normalize_hashtag(item) for item in re.findall(r"#\w+", text)]
+    existing = [item for item in existing if item]
+    candidates = [*existing, *_hashtag_candidates_for(text)]
+
+    selected: list[str] = []
+    for tag in candidates:
+        if tag not in selected:
+            selected.append(tag)
+        if len(selected) >= 4:
+            break
+
+    while len(selected) < 2:
+        for fallback in ["#Trading", "#Forex"]:
+            if fallback not in selected:
+                selected.append(fallback)
+            if len(selected) >= 2:
+                break
+
+    return selected
+
+
+def _hashtag_candidates_for(text: str) -> list[str]:
+    lowered = text.lower()
+    candidates: list[str] = []
+
+    if re.search(r"\b(gold|xauusd)\b", lowered):
+        candidates.extend(["#XAUUSD", "#GoldTrading"])
+    if re.search(r"\b(entry|sl|stop loss|tp|target|setup|signal)\b", lowered):
+        candidates.extend(["#ForexSignals", "#TradeSetup"])
+    if re.search(r"\b(profit|pips|secured|recap|session)\b", lowered):
+        candidates.extend(["#TradingRecap", "#RiskManagement"])
+    if re.search(r"\b(analysis|market|structure|trend|price action)\b", lowered):
+        candidates.extend(["#MarketAnalysis", "#PriceAction"])
+    if re.search(r"\b(risk|break.?even|capital|management)\b", lowered):
+        candidates.append("#RiskManagement")
+
+    candidates.extend(["#Trading", "#Forex"])
+    return candidates
+
+
+def _normalize_hashtag(value: str) -> str | None:
+    tag = re.sub(r"[^A-Za-z0-9_]", "", value.lstrip("#"))
+    if not tag:
+        return None
+    return f"#{tag[:40]}"
+
+
+def _is_hashtag_line(line: str) -> bool:
+    tokens = line.split()
+    if not tokens:
+        return False
+    return all(re.fullmatch(r"#[A-Za-z0-9_]+", token) for token in tokens)
 
 
 def _style_required_icons(text: str) -> str:

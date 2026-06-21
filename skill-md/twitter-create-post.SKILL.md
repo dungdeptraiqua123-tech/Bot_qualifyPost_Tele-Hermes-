@@ -1,7 +1,7 @@
 ---
 name: twitter-create-post
 description: "Create Twitter/X posts from trading/forex content: signals, analysis, profit updates, educational, and promotions."
-version: 4.3.0
+version: 4.4.0
 author: Duxq
 license: MIT
 platforms: [linux, macos, windows]
@@ -32,6 +32,9 @@ Tạo bài đăng Twitter/X từ nội dung Telegram/trading. Hỗ trợ 5 thể
 - CTA cuối bài phải có lý do/giá trị rõ ràng trước hành động: tư vấn 1:1, hỗ trợ thị trường, kế hoạch giao dịch, quản lý vốn, review entry/exit.
 - CTA vẫn phải kết thúc bằng **"Link in bio"** hoặc **"Check my profile"** — KHÔNG @handle, KHÔNG DM, KHÔNG link Telegram.
 - CTA không được hứa lợi nhuận, không cam kết winrate, không tạo cảm giác chắc chắn thắng.
+- Dòng cuối cùng phải là 2-4 hashtag phù hợp với nội dung bài viết.
+- Hashtag viết không dấu, ưu tiên tiếng Anh, không spam và không dùng hashtag quá chung chung nếu có lựa chọn cụ thể hơn.
+- Ví dụ hashtag: **#XAUUSD #GoldTrading #ForexSignals #RiskManagement**.
 - Link Telegram chỉ để trong bio profile.
 - ≤ 200 từ.
 
