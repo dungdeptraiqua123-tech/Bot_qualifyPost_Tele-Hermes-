@@ -67,11 +67,14 @@ class RewriteAgent:
             "- Moi bien the phai doi hook, goc viet, cau truc cau, thu tu y va cach dien dat.\n"
             "- Goi y bien the: recap ket qua, bai hoc ky luat, execution checklist, market insight.\n"
             "- Do tuong dong giua 2 bai phai thap; giu facts/gia/entry/SL/TP/pips chinh xac.\n"
-            "- Moi bai <= 200 tu, co hook ro, noi dung gon, CTA text thuan.\n"
+            "- Moi bai <= 200 tu, co hook ro, noi dung gon, CTA co ly do ro de nguoi doc bam vao.\n"
             "- Moi bai BAT BUOC co 1-3 emoji/icon lien quan; toi da 4 emoji/icon.\n"
             "- Chi dat emoji/icon o hook, bullet diem nhan, hoac truoc CTA neu phu hop.\n"
             "- Khong spam emoji, khong lap chuoi icon, khong thay so/gia/SL/TP bang icon.\n"
-            "- Moi bai bat buoc ket thuc bang dung mot CTA: Link in bio hoac Check my profile.\n"
+            "- Moi bai bat buoc ket thuc bang CTA co 2 phan: ly do/loi ich + Link in bio hoac Check my profile.\n"
+            "- Vi du CTA: Need 1:1 guidance on entries and risk? Link in bio.\n"
+            "- Vi du CTA: Want 24/7 market support and cleaner trade plans? Check my profile.\n"
+            "- CTA khong duoc hua loi nhuan, khong cam ket winrate, khong tao cam giac dam bao ket qua.\n"
             "- Khong chen link Telegram, khong @handle, khong keu goi DM.\n"
             "- Khong bia so lieu moi. Neu la signal, giu nguyen entry/SL/TP/gia.\n"
             "- Bot se tu gui media goc sau, nen JSON chi can text.\n\n"
@@ -106,6 +109,7 @@ class RewriteAgent:
             "Moi target_channel_id nhan dung 1 bai.\n"
             "Neu co nhieu target, cac bai phai la cac bien the doc lap: khac hook, khac cau truc, khac wording.\n"
             "Khong duoc tao cac bai gan nhu giong nhau roi chi doi CTA.\n"
+            "CTA cuoi bai phai cho nguoi doc mot ly do cu the de bam vao profile/bio.\n"
             "Input JSON:\n"
             f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
         )
@@ -153,7 +157,7 @@ class RewriteAgent:
             posts.append(
                 RewritePost(
                     target_channel_id=int(target_channel_id),
-                    text=_style_required_icons(text.strip()),
+                    text=_style_required_icons(_style_value_cta(text.strip())),
                 )
             )
 
@@ -200,6 +204,78 @@ def _strip_code_fence(text: str) -> str:
     if lines and lines[-1].startswith("```"):
         lines = lines[:-1]
     return "\n".join(lines).strip()
+
+
+def _style_value_cta(text: str) -> str:
+    lines = text.splitlines()
+    for index in range(len(lines) - 1, -1, -1):
+        line = lines[index].strip()
+        if not line:
+            continue
+        anchor = _extract_cta_anchor(line)
+        if not anchor:
+            return text
+        if _has_cta_reason(line):
+            return text
+
+        leading_space = lines[index][: len(lines[index]) - len(lines[index].lstrip())]
+        lines[index] = f"{leading_space}{_build_value_cta(anchor, text)}"
+        return "\n".join(lines)
+    return text
+
+
+def _extract_cta_anchor(line: str) -> str | None:
+    match = re.search(r"\b(link in bio|check my profile)\b", line, flags=re.IGNORECASE)
+    if not match:
+        return None
+    anchor = match.group(1).lower()
+    if anchor == "link in bio":
+        return "Link in bio"
+    return "Check my profile"
+
+
+def _has_cta_reason(line: str) -> bool:
+    without_anchor = re.sub(
+        r"\b(?:link in bio|check my profile)\b",
+        " ",
+        line,
+        flags=re.IGNORECASE,
+    )
+    words = re.findall(r"[A-Za-z0-9]+", without_anchor)
+    return len(words) >= 4
+
+
+def _build_value_cta(anchor: str, text: str) -> str:
+    templates = _cta_templates_for(text)
+    index = sum(ord(char) for char in text + anchor) % len(templates)
+    return templates[index].format(anchor=anchor)
+
+
+def _cta_templates_for(text: str) -> list[str]:
+    lowered = text.lower()
+    if re.search(r"\b(entry|sl|stop loss|tp|target|setup|signal)\b", lowered):
+        return [
+            "Need 1:1 guidance to plan entries and risk? {anchor}.",
+            "Want cleaner trade plans with risk notes? {anchor}.",
+            "Need 24/7 market support before the next setup? {anchor}.",
+        ]
+    if re.search(r"\b(profit|pips|secured|recap|session)\b", lowered):
+        return [
+            "Want the full session breakdown and risk notes? {anchor}.",
+            "Need help turning clean execution into a repeatable plan? {anchor}.",
+            "Want 1:1 support to review entries and exits? {anchor}.",
+        ]
+    if re.search(r"\b(analysis|market|structure|trend|price action)\b", lowered):
+        return [
+            "Need a clearer market read before your next entry? {anchor}.",
+            "Want practical XAUUSD analysis and setup notes? {anchor}.",
+            "Need 1:1 support building a cleaner trade plan? {anchor}.",
+        ]
+    return [
+        "Need 1:1 support and practical trading guidance? {anchor}.",
+        "Want market updates, risk notes, and cleaner plans? {anchor}.",
+        "Need 24/7 support around trade planning? {anchor}.",
+    ]
 
 
 def _style_required_icons(text: str) -> str:
