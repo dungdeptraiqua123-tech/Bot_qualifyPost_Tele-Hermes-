@@ -1,7 +1,7 @@
 ---
 name: content-review
 description: "3-Tier content review: classify (Signal/Education/Seeding), rate-limit (Education only), then quality check. Output: raw text ONLY the 2-line verdict."
-version: 4.0.0
+version: 4.1.0
 author: Duxq
 license: MIT
 platforms: [linux, macos, windows]
@@ -33,11 +33,17 @@ KHÔNG thêm bất kỳ dòng nào khác. KHÔNG ghi file. KHÔNG tạo cron.
 
 Đọc bài viết (text + media), xác định 1 trong 3 loại:
 
+> Quy ước runtime:
+> - Bot không gửi file ảnh/video thật vào Review Agent.
+> - Nếu input JSON có `has_media=true` hoặc `media_count > 0` thì phải xem là bài CÓ media.
+> - Không được FAIL chỉ vì không xem được nội dung media thật.
+> - Review chỉ xét text và metadata media, không xác thực nội dung ảnh/video.
+
 | Thể loại | Điều kiện | Nhận dạng | Hành động |
 |:---|:---|:---|---:|
-| **Signal** | Phải có cả Text + Media | Lệnh giao dịch: entry, SL, TP, khung giá, XAUUSD/BTC... | PASS ngay |
-| **Seeding High** | BẮT BUỘC Text + Media | CHẤT LƯỢNG CAO: có cấu trúc, văn phong chuyên nghiệp, cảm ơn/chia sẻ giá trị, nhiều ảnh kết quả, đầu tư chỉn chu, thể hiện uy tín | PASS ngay |
-| **Seeding Low** | BẮT BUỘC Text + Media | CHẤT LƯỢNG THẤP: 1-5 từ cảm thán (Wow, Nice...), hype suông, spam, reaction rỗng | FAIL |
+| **Signal** | Phải có Text + `has_media=true`/`media_count > 0` | Lệnh giao dịch: entry, SL, TP, khung giá, XAUUSD/BTC... | PASS ngay |
+| **Seeding High** | BẮT BUỘC Text + `has_media=true`/`media_count > 0` | CHẤT LƯỢNG CAO: có cấu trúc, văn phong chuyên nghiệp, cảm ơn/chia sẻ giá trị, nhiều ảnh kết quả, đầu tư chỉn chu, thể hiện uy tín | PASS ngay |
+| **Seeding Low** | BẮT BUỘC Text + `has_media=true`/`media_count > 0` | CHẤT LƯỢNG THẤP: 1-5 từ cảm thán (Wow, Nice...), hype suông, spam, reaction rỗng | FAIL |
 | **Education** | — | Phân tích thị trường, Wyckoff, volume profile, trading plan, nhận định, hướng dẫn. KHÔNG quảng bá/khoe kết quả | Xuống Tier 2 |
 
 Nếu KHÔNG thuộc các loại trên → FAIL.
