@@ -1,7 +1,7 @@
 ---
 name: twitter-create-post
 description: "Create Twitter/X posts from trading/forex content: signals, analysis, profit updates, educational, and promotions."
-version: 4.5.0
+version: 4.6.0
 author: Duxq
 license: MIT
 platforms: [linux, macos, windows]
@@ -48,8 +48,11 @@ Tạo bài đăng Twitter/X từ nội dung Telegram/trading. Hỗ trợ 5 thể
 
 ## ICON / EMOJI
 
-- Mỗi bài BẮT BUỘC có 1-3 emoji/icon liên quan; tối đa 4 emoji/icon.
+- Mỗi bài BẮT BUỘC có emoji/icon liên quan ở hook, signal lines, hoặc ý chính.
+- Nếu là bài signal, Entry/Zone phải có icon, TP/Target phải có icon, SL/Stop Loss phải có icon.
+- Icon signal chuẩn: Entry/Zone dùng ✅, TP/Target dùng 🎯, SL/Stop Loss dùng ⛔.
+- Các bài không phải signal: các ý chính/bullet quan trọng phải có icon phù hợp.
 - Icon phải giúp bài viết thu hút hơn nhưng không được làm rối bài.
-- Nên đặt icon ở hook, bullet điểm nhấn, hoặc trước CTA nếu phù hợp.
+- Nên đặt icon ở hook, signal line, bullet điểm nhấn, hoặc trước CTA nếu phù hợp.
 - Không spam emoji, không lặp chuỗi icon.
 - Không thay số liệu, giá, entry, SL, TP, pip bằng icon.

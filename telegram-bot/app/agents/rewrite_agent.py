@@ -68,8 +68,11 @@ class RewriteAgent:
             "- Goi y bien the: recap ket qua, bai hoc ky luat, execution checklist, market insight.\n"
             "- Do tuong dong giua 2 bai phai thap; giu facts/gia/entry/SL/TP/pips chinh xac.\n"
             "- Moi bai <= 200 tu, co hook ro, noi dung gon, CTA co ly do ro de nguoi doc bam vao.\n"
-            "- Moi bai BAT BUOC co 1-3 emoji/icon lien quan; toi da 4 emoji/icon.\n"
-            "- Chi dat emoji/icon o hook, bullet diem nhan, hoac truoc CTA neu phu hop.\n"
+            "- Moi bai BAT BUOC co emoji/icon lien quan o hook, signal lines, hoac y chinh.\n"
+            "- Neu la signal, moi dong Entry/Zone phai co icon, moi dong TP phai co icon, moi dong SL phai co icon.\n"
+            "- Icon signal chuan: Entry/Zone dung ✅, TP/Target dung 🎯, SL/Stop Loss dung ⛔.\n"
+            "- Cac bai khac phai dat icon phu hop o cac y chinh/bullet quan trong.\n"
+            "- Chi dat emoji/icon o hook, signal line, bullet diem nhan, hoac truoc CTA neu phu hop.\n"
             "- Khong spam emoji, khong lap chuoi icon, khong thay so/gia/SL/TP bang icon.\n"
             "- Neu bai co tin hieu entry/SL/TP, bat buoc dat thanh signal block rieng de de quet.\n"
             "- Khong viet entry, SL, TP chung trong cung mot cau/paragraph.\n"
@@ -116,6 +119,8 @@ class RewriteAgent:
             "Neu co nhieu target, cac bai phai la cac bien the doc lap: khac hook, khac cau truc, khac wording.\n"
             "Khong duoc tao cac bai gan nhu giong nhau roi chi doi CTA.\n"
             "Neu bai co tin hieu entry/SL/TP, hay tach thanh signal block rieng, moi muc mot dong de de nhin.\n"
+            "Moi dong Entry/Zone, TP/Target, SL/Stop Loss phai co icon phu hop de lam noi bat tin hieu.\n"
+            "Neu khong phai signal, cac y chinh/bullet quan trong can co icon phu hop nhung khong spam.\n"
             "CTA cuoi bai phai cho nguoi doc mot ly do cu the de bam vao profile/bio.\n"
             "Dong cuoi cung phai co 2-4 hashtag phu hop voi bai viet.\n"
             "Input JSON:\n"
@@ -165,7 +170,7 @@ class RewriteAgent:
             posts.append(
                 RewritePost(
                     target_channel_id=int(target_channel_id),
-                    text=_style_required_icons(
+                    text=_style_enhanced_icons(
                         _style_required_hashtags(
                             _style_value_cta(_style_signal_block(text.strip()))
                         )
@@ -566,6 +571,126 @@ def _prefix_first_matching_line(lines: list[str], *, pattern: str, icon: str) ->
         leading_space = line[: len(line) - len(line.lstrip())]
         lines[index] = f"{leading_space}{icon} {line.lstrip()}"
         return
+
+
+ICON_ENTRY = "\u2705"
+ICON_TP = "\U0001f3af"
+ICON_SL = "\u26d4"
+ICON_CTA = "\U0001f449"
+ICON_KEY = "\U0001f4cc"
+ICON_BUY = "\U0001f4c8"
+ICON_SELL = "\U0001f4c9"
+ICON_PROFIT = "\u2705"
+ICON_GOLD = "\U0001f947"
+ICON_ANALYSIS = "\U0001f9e0"
+ICON_DEFAULT = "\U0001f4cc"
+
+
+def _style_enhanced_icons(text: str) -> str:
+    text = _ensure_topic_icon(text)
+    lines = text.splitlines()
+
+    _prefix_all_icon_lines(
+        lines,
+        pattern=r"\b(?:(?:buy|sell)\s+(?:limit|stop|market)?|entry|entry point|zone|buy zone|sell zone)\s*:",
+        icon=ICON_ENTRY,
+    )
+    _prefix_all_icon_lines(
+        lines,
+        pattern=r"\b(?:sl|stop loss|stoploss)\s*:",
+        icon=ICON_SL,
+    )
+    _prefix_all_icon_lines(
+        lines,
+        pattern=r"\b(?:tp|target)\s*\d*\s*:",
+        icon=ICON_TP,
+    )
+    _prefix_first_icon_line(
+        lines,
+        pattern=r"\b(?:link in bio|check my profile)\b",
+        icon=ICON_CTA,
+    )
+    _prefix_key_point_lines(lines)
+
+    return "\n".join(lines)
+
+
+def _ensure_topic_icon(text: str) -> str:
+    if _has_icon(text):
+        return text
+
+    icon = _choose_enhanced_icon(text)
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip():
+            leading_space = line[: len(line) - len(line.lstrip())]
+            lines[index] = f"{leading_space}{icon} {line.lstrip()}"
+            return "\n".join(lines)
+
+    return f"{icon} {text}".strip()
+
+
+def _prefix_all_icon_lines(lines: list[str], *, pattern: str, icon: str) -> None:
+    regex = re.compile(pattern, flags=re.IGNORECASE)
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or _has_icon(stripped) or not regex.search(stripped):
+            continue
+        leading_space = line[: len(line) - len(line.lstrip())]
+        lines[index] = f"{leading_space}{icon} {line.lstrip()}"
+
+
+def _prefix_first_icon_line(lines: list[str], *, pattern: str, icon: str) -> None:
+    regex = re.compile(pattern, flags=re.IGNORECASE)
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or _has_icon(stripped) or not regex.search(stripped):
+            continue
+        leading_space = line[: len(line) - len(line.lstrip())]
+        lines[index] = f"{leading_space}{icon} {line.lstrip()}"
+        return
+
+
+def _prefix_key_point_lines(lines: list[str]) -> None:
+    added = 0
+    patterns = [
+        r"^\s*[-*•]\s+\S+",
+        r"\b(?:key levels?|what worked|risk|plan|setup|support|resistance|market structure|trade plan|bulls?|bears?|momentum)\b",
+    ]
+    regexes = [re.compile(pattern, flags=re.IGNORECASE) for pattern in patterns]
+
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if (
+            not stripped
+            or _has_icon(stripped)
+            or _is_hashtag_line(stripped)
+            or re.search(r"\b(?:link in bio|check my profile)\b", stripped, flags=re.IGNORECASE)
+        ):
+            continue
+        if not any(regex.search(stripped) for regex in regexes):
+            continue
+
+        leading_space = line[: len(line) - len(line.lstrip())]
+        lines[index] = f"{leading_space}{ICON_KEY} {line.lstrip()}"
+        added += 1
+        if added >= 3:
+            return
+
+
+def _choose_enhanced_icon(text: str) -> str:
+    lowered = text.lower()
+    if re.search(r"\b(sell|short|bearish)\b", lowered):
+        return ICON_SELL
+    if re.search(r"\b(buy|long|bullish)\b", lowered):
+        return ICON_BUY
+    if re.search(r"\b(profit|pips|secured|tp|target|hit)\b", lowered):
+        return ICON_PROFIT
+    if re.search(r"\b(gold|xauusd)\b", lowered):
+        return ICON_GOLD
+    if re.search(r"\b(analysis|education|plan|setup)\b", lowered):
+        return ICON_ANALYSIS
+    return ICON_DEFAULT
 
 
 def _posts_are_distinct(posts: list[RewritePost]) -> bool:
