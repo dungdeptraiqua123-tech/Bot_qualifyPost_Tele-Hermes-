@@ -71,6 +71,9 @@ class RewriteAgent:
             "- Moi bai BAT BUOC co 1-3 emoji/icon lien quan; toi da 4 emoji/icon.\n"
             "- Chi dat emoji/icon o hook, bullet diem nhan, hoac truoc CTA neu phu hop.\n"
             "- Khong spam emoji, khong lap chuoi icon, khong thay so/gia/SL/TP bang icon.\n"
+            "- Neu bai co tin hieu entry/SL/TP, bat buoc dat thanh signal block rieng de de quet.\n"
+            "- Khong viet entry, SL, TP chung trong cung mot cau/paragraph.\n"
+            "- Format signal goi y: XAUUSD\\nBuy limit: 4153-4149\\nSL: 4140\\nTP1: 4166\\nTP2: 4179.\n"
             "- Moi bai bat buoc co CTA gan cuoi bai gom 2 phan: ly do/loi ich + Link in bio hoac Check my profile.\n"
             "- Vi du CTA: Need 1:1 guidance on entries and risk? Link in bio.\n"
             "- Vi du CTA: Want 24/7 market support and cleaner trade plans? Check my profile.\n"
@@ -112,6 +115,7 @@ class RewriteAgent:
             "Moi target_channel_id nhan dung 1 bai.\n"
             "Neu co nhieu target, cac bai phai la cac bien the doc lap: khac hook, khac cau truc, khac wording.\n"
             "Khong duoc tao cac bai gan nhu giong nhau roi chi doi CTA.\n"
+            "Neu bai co tin hieu entry/SL/TP, hay tach thanh signal block rieng, moi muc mot dong de de nhin.\n"
             "CTA cuoi bai phai cho nguoi doc mot ly do cu the de bam vao profile/bio.\n"
             "Dong cuoi cung phai co 2-4 hashtag phu hop voi bai viet.\n"
             "Input JSON:\n"
@@ -162,7 +166,9 @@ class RewriteAgent:
                 RewritePost(
                     target_channel_id=int(target_channel_id),
                     text=_style_required_icons(
-                        _style_required_hashtags(_style_value_cta(text.strip()))
+                        _style_required_hashtags(
+                            _style_value_cta(_style_signal_block(text.strip()))
+                        )
                     ),
                 )
             )
@@ -220,6 +226,132 @@ def _strip_code_fence(text: str) -> str:
     if lines and lines[-1].startswith("```"):
         lines = lines[:-1]
     return "\n".join(lines).strip()
+
+
+def _style_signal_block(text: str) -> str:
+    lines = text.splitlines()
+    styled_lines: list[str] = []
+
+    for line in lines:
+        facts = _extract_inline_signal_facts(line.strip())
+        if not facts:
+            styled_lines.append(line)
+            continue
+
+        leading_space = line[: len(line) - len(line.lstrip())]
+        block = _build_signal_block(facts)
+        commentary = _signal_commentary(line.strip(), facts["spans"])
+
+        if styled_lines and styled_lines[-1].strip():
+            styled_lines.append("")
+        styled_lines.extend(f"{leading_space}{item}" for item in block)
+        if commentary:
+            styled_lines.extend(["", f"{leading_space}{commentary}"])
+
+    return "\n".join(styled_lines)
+
+
+def _extract_inline_signal_facts(line: str) -> dict[str, Any] | None:
+    if not line:
+        return None
+
+    entry_match = _find_entry_match(line)
+    if not entry_match:
+        return None
+
+    sl_match = re.search(
+        r"\b(?:sl|stop\s*loss)\s*[:@]?\s*(?P<value>\d+(?:\.\d+)?)",
+        line,
+        flags=re.IGNORECASE,
+    )
+    tp_matches = list(
+        re.finditer(
+            r"\b(?:tp|target)\s*(?P<num>\d*)\s*[:@]?\s*(?P<value>open|\d+(?:\.\d+)?)",
+            line,
+            flags=re.IGNORECASE,
+        )
+    )
+    if not sl_match and not tp_matches:
+        return None
+
+    symbol_match = re.search(
+        r"\b(XAUUSD|BTCUSD|ETHUSD|EURUSD|GBPUSD|USDJPY|NAS100|US30)\b",
+        line,
+        flags=re.IGNORECASE,
+    )
+    spans = [entry_match.span(), *(match.span() for match in tp_matches)]
+    if sl_match:
+        spans.append(sl_match.span())
+    if symbol_match:
+        spans.append(symbol_match.span())
+
+    return {
+        "symbol": symbol_match.group(1).upper() if symbol_match else None,
+        "entry_label": _entry_label(entry_match),
+        "entry_value": _normalize_signal_value(entry_match.group("value")),
+        "sl": _normalize_signal_value(sl_match.group("value")) if sl_match else None,
+        "tps": [
+            (
+                f"TP{match.group('num')}" if match.group("num") else "TP",
+                _normalize_signal_value(match.group("value")),
+            )
+            for match in tp_matches
+        ],
+        "spans": spans,
+    }
+
+
+def _find_entry_match(line: str) -> re.Match[str] | None:
+    value_pattern = r"\d+(?:\.\d+)?(?:\s*(?:-|–|—|to)\s*\d+(?:\.\d+)?)?"
+    patterns = [
+        rf"\b(?P<direction>buy|sell)\s+(?P<order>limit|stop|market)?\s*(?:at|zone|entry)?\s*[:@]?\s*(?P<value>{value_pattern})",
+        rf"\b(?P<label>entry(?:\s+point)?|zone)\s*[:@]?\s*(?P<value>{value_pattern})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, line, flags=re.IGNORECASE)
+        if match:
+            return match
+    return None
+
+
+def _entry_label(match: re.Match[str]) -> str:
+    direction = match.groupdict().get("direction")
+    if not direction:
+        return "Entry"
+
+    order = match.groupdict().get("order") or ""
+    label = f"{direction} {order}".strip()
+    return label.capitalize()
+
+
+def _normalize_signal_value(value: str) -> str:
+    return re.sub(r"\s*(?:-|–|—|to)\s*", "-", value.strip(), flags=re.IGNORECASE)
+
+
+def _build_signal_block(facts: dict[str, Any]) -> list[str]:
+    block: list[str] = []
+    if facts["symbol"]:
+        block.append(str(facts["symbol"]))
+
+    block.append(f"{facts['entry_label']}: {facts['entry_value']}")
+    if facts["sl"]:
+        block.append(f"SL: {facts['sl']}")
+    for label, value in facts["tps"]:
+        block.append(f"{label}: {value.upper() if value.lower() == 'open' else value}")
+    return block
+
+
+def _signal_commentary(line: str, spans: list[tuple[int, int]]) -> str:
+    cleaned = line
+    for start, end in sorted(spans, reverse=True):
+        cleaned = f"{cleaned[:start]} {cleaned[end:]}"
+    cleaned = re.sub(r"\s*[|•,;]\s*", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .,-–—|")
+    cleaned = re.sub(r"\s+\.", ".", cleaned)
+    cleaned = re.sub(r"(?:\.\s*){2,}", ". ", cleaned).strip(" .,-–—|")
+    if not cleaned or not re.search(r"[A-Za-z0-9]", cleaned):
+        return ""
+    return f"{cleaned[:1].upper()}{cleaned[1:]}"
 
 
 def _style_value_cta(text: str) -> str:
