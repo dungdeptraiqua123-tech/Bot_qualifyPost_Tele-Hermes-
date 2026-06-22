@@ -10,6 +10,9 @@ from app.hermes_client import HermesClient
 from app.models import PostObject
 
 
+NO_MEDIA_REASON = "Bai viet khong co anh/video."
+
+
 @dataclass(frozen=True)
 class ReviewResult:
     decision: str
@@ -29,6 +32,15 @@ class ReviewAgent:
         self.skill_text = skill_path.read_text(encoding="utf-8")
 
     async def review(self, post: PostObject) -> ReviewResult:
+        if not _post_has_media(post):
+            raw_text = f"Ket luan: FAIL\nLy do: {NO_MEDIA_REASON}"
+            return ReviewResult(
+                decision="fail",
+                category=None,
+                reason=NO_MEDIA_REASON,
+                raw_text=raw_text,
+            )
+
         raw_text = await self.hermes_client.chat_completion(
             system_prompt=self._system_prompt(),
             user_prompt=self._user_prompt(post),
@@ -42,6 +54,7 @@ class ReviewAgent:
             "Runtime notes:\n"
             "- Bot khong gui anh/video that, chi gui metadata has_media va media_type.\n"
             "- Neu has_media=true hoac media_count > 0, phai xem nhu bai viet CO media.\n"
+            "- Neu has_media=false va media_count=0, phai FAIL ngay vi bai khong co media.\n"
             "- Khong duoc FAIL chi vi khong xem duoc noi dung anh/video that.\n"
             "- Review chi dua tren text va metadata media, khong xac thuc noi dung media.\n"
             "- Khong ap dung Tier 2 time limit vi bot khong cung cap lich su bai viet.\n"
@@ -98,6 +111,10 @@ class ReviewAgent:
             reason="Unable to parse Review Agent verdict.",
             raw_text=text,
         )
+
+
+def _post_has_media(post: PostObject) -> bool:
+    return bool(post.has_media or post.media_count > 0)
 
 
 def _extract_line_value(text: str, key: str) -> str | None:
