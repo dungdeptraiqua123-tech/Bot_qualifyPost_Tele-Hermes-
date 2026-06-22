@@ -36,7 +36,11 @@ class RewriteAgent:
             system_prompt=self._system_prompt(),
             user_prompt=self._user_prompt(post, review_result),
         )
-        result = self.parse_result(raw_text, expected_target_ids=post.target_channel_ids)
+        result = await self._parse_or_retry_json(
+            raw_text,
+            post=post,
+            review_result=review_result,
+        )
         if len(result.posts) <= 1 or _posts_are_distinct(result.posts):
             return result
 
@@ -44,10 +48,14 @@ class RewriteAgent:
             system_prompt=self._system_prompt(),
             user_prompt=self._repair_user_prompt(post, review_result, result),
         )
-        repair_result = self.parse_result(
-            repair_raw_text,
-            expected_target_ids=post.target_channel_ids,
-        )
+        try:
+            repair_result = await self._parse_or_retry_json(
+                repair_raw_text,
+                post=post,
+                review_result=review_result,
+            )
+        except RuntimeError:
+            return result
         if _posts_are_distinct(repair_result.posts):
             return repair_result
 
@@ -150,6 +158,70 @@ class RewriteAgent:
             "Van giu nguyen facts, gia, entry, SL, TP, pips va dung target_channel_id.\n"
             "Ket qua truoc do:\n"
             f"{json.dumps(previous_payload, ensure_ascii=False, indent=2)}"
+        )
+
+    async def _parse_or_retry_json(
+        self,
+        raw_text: str,
+        *,
+        post: PostObject,
+        review_result: ReviewResult,
+    ) -> RewriteResult:
+        try:
+            return self.parse_result(raw_text, expected_target_ids=post.target_channel_ids)
+        except Exception as first_error:
+            retry_raw_text = await self.hermes_client.chat_completion(
+                system_prompt=self._json_only_system_prompt(),
+                user_prompt=self._json_retry_user_prompt(
+                    post=post,
+                    review_result=review_result,
+                    invalid_response=raw_text,
+                    parse_error=first_error,
+                ),
+            )
+            try:
+                return self.parse_result(
+                    retry_raw_text,
+                    expected_target_ids=post.target_channel_ids,
+                )
+            except Exception as retry_error:
+                raise RuntimeError(
+                    "Rewrite Agent did not return valid JSON after retry. "
+                    f"first_error={first_error}; retry_error={retry_error}"
+                ) from retry_error
+
+    def _json_only_system_prompt(self) -> str:
+        return (
+            "Ban la Rewrite Agent. Tra ve DUY NHAT mot JSON object hop le.\n"
+            "Khong markdown, khong code fence, khong giai thich, khong text ngoai JSON.\n"
+            "Schema bat buoc:\n"
+            "{\"posts\":[{\"target_channel_id\":-100123,\"text\":\"...\"}]}\n"
+            "Rules:\n"
+            "- posts phai la array.\n"
+            "- Moi target_channel_id trong input co dung 1 object.\n"
+            "- text khong duoc rong.\n"
+            "- Neu la signal, entry/SL/TP phai tach dong va co icon phu hop.\n"
+            "- Dong cuoi cung la 2-4 hashtag phu hop.\n"
+        )
+
+    def _json_retry_user_prompt(
+        self,
+        *,
+        post: PostObject,
+        review_result: ReviewResult,
+        invalid_response: str,
+        parse_error: Exception,
+    ) -> str:
+        invalid_preview = invalid_response[:1500]
+        return (
+            "Lan tra loi truoc sai format JSON nen bot khong xu ly duoc.\n"
+            "Hay viet lai tu input goc va CHI TRA VE JSON hop le theo schema.\n"
+            "Khong duoc them bat ky chu nao ben ngoai JSON.\n\n"
+            f"{self._user_prompt(post, review_result)}\n\n"
+            "Parse error:\n"
+            f"{parse_error}\n\n"
+            "Invalid response preview:\n"
+            f"{invalid_preview}"
         )
 
     @staticmethod
