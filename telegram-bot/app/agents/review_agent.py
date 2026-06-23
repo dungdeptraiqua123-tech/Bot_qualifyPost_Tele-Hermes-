@@ -45,7 +45,15 @@ class ReviewAgent:
             system_prompt=self._system_prompt(),
             user_prompt=self._user_prompt(post),
         )
-        return self.parse_result(raw_text)
+        result = self.parse_result(raw_text)
+        if not _is_false_no_media_fail(post, result):
+            return result
+
+        retry_raw_text = await self.hermes_client.chat_completion(
+            system_prompt=self._media_retry_system_prompt(),
+            user_prompt=self._media_retry_user_prompt(post, result),
+        )
+        return self.parse_result(retry_raw_text)
 
     def _system_prompt(self) -> str:
         return (
@@ -54,7 +62,7 @@ class ReviewAgent:
             "Runtime notes:\n"
             "- Bot khong gui anh/video that, chi gui metadata has_media va media_type.\n"
             "- Neu has_media=true hoac media_count > 0, phai xem nhu bai viet CO media.\n"
-            "- Neu has_media=false va media_count=0, phai FAIL ngay vi bai khong co media.\n"
+            "- Bai khong co media da bi bot chan truoc khi goi Review Agent.\n"
             "- Khong duoc FAIL chi vi khong xem duoc noi dung anh/video that.\n"
             "- Review chi dua tren text va metadata media, khong xac thuc noi dung media.\n"
             "- Khong ap dung Tier 2 time limit vi bot khong cung cap lich su bai viet.\n"
@@ -81,6 +89,28 @@ class ReviewAgent:
             "Hay review bai viet Telegram sau theo skill content-review.\n"
             "Input JSON:\n"
             f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+        )
+
+    def _media_retry_system_prompt(self) -> str:
+        return (
+            "Ban la Review Agent cho Telegram channel posts.\n"
+            "CHI tra ve dung format PASS/FAIL, khong giai thich ngoai format.\n"
+            "Quan trong: input co has_media=true hoac media_count > 0 thi bat buoc xem la CO media.\n"
+            "Khong duoc FAIL voi ly do bai khong co anh/video neu metadata cho thay co media.\n"
+            "Bot khong gui file media that; chi metadata media la du dieu kien media.\n\n"
+            "<SKILL>\n"
+            f"{self.skill_text}\n"
+            "</SKILL>"
+        )
+
+    def _media_retry_user_prompt(self, post: PostObject, previous_result: ReviewResult) -> str:
+        return (
+            "Ket qua truoc do bi nghi la sai vi fail voi ly do khong co media, "
+            "nhung metadata cua bai viet cho thay bai CO media.\n"
+            "Hay review lai dua tren text va metadata. Khong fail vi khong xem duoc file media that.\n\n"
+            f"{self._user_prompt(post)}\n\n"
+            "Ket qua truoc do:\n"
+            f"{previous_result.raw_text}"
         )
 
     @staticmethod
@@ -115,6 +145,22 @@ class ReviewAgent:
 
 def _post_has_media(post: PostObject) -> bool:
     return bool(post.has_media or post.media_count > 0)
+
+
+def _is_false_no_media_fail(post: PostObject, result: ReviewResult) -> bool:
+    if not _post_has_media(post) or result.decision != "fail":
+        return False
+
+    text = _fold(" ".join(part for part in [result.reason, result.raw_text] if part)).lower()
+    no_media_phrases = (
+        "khong co anh",
+        "khong co video",
+        "khong co media",
+        "khong co hinh",
+        "no media",
+        "without media",
+    )
+    return any(phrase in text for phrase in no_media_phrases)
 
 
 def _extract_line_value(text: str, key: str) -> str | None:

@@ -1,7 +1,7 @@
 ---
 name: content-review
 description: "3-Tier content review: classify (Signal/Education/Seeding), rate-limit (Education only), then quality check. Output: raw text ONLY the 2-line verdict."
-version: 4.2.0
+version: 4.3.0
 author: Duxq
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [telegram, hermes-agent]
 ---
 
-# CONTENT REVIEW v4.2 — FUNCTION CỨNG
+# CONTENT REVIEW v4.3 — FUNCTION CỨNG
 
 ## OUTPUT BẮT BUỘC
 
@@ -29,15 +29,13 @@ KHÔNG thêm bất kỳ dòng nào khác. KHÔNG ghi file. KHÔNG tạo cron.
 
 ---
 
-## TIER 0: MEDIA GATE (UU TIEN CAO NHAT)
+## MEDIA GATE (DO BOT XU LY TRUOC REVIEW)
 
-Neu input JSON co `has_media=false` va `media_count=0` thi FAIL ngay.
+Bot da loc bai khong co media truoc khi goi Review Agent.
 
-Output:
-Ket luan: FAIL
-Ly do: Bai viet khong co anh/video.
-
-Chi khi bai co `has_media=true` hoac `media_count > 0` moi duoc tiep tuc sang Tier 1.
+Review Agent thuong chi nhan bai co `has_media=true` hoac `media_count > 0`.
+Neu input JSON co `has_media=true` hoac `media_count > 0`, bat buoc xem la bai CO media.
+Khong duoc FAIL chi vi bot khong gui file anh/video that.
 
 ---
 
@@ -48,7 +46,6 @@ Chi khi bai co `has_media=true` hoac `media_count > 0` moi duoc tiep tuc sang Ti
 > Quy ước runtime:
 > - Bot không gửi file ảnh/video thật vào Review Agent.
 > - Nếu input JSON có `has_media=true` hoặc `media_count > 0` thì phải xem là bài CÓ media.
-> - Nếu input JSON có `has_media=false` và `media_count=0` thì FAIL ngay theo Tier 0.
 > - Không được FAIL chỉ vì không xem được nội dung media thật.
 > - Review chỉ xét text và metadata media, không xác thực nội dung ảnh/video.
 
@@ -73,7 +70,7 @@ Tối đa 3 bài PASS/giờ, cách nhau 20 phút. Vi phạm → FAIL. OK → Tie
 | Có | 20-200 từ | PASS, giữ nguyên |
 | Có | > 200 từ | PASS, viết lại ngắn gọn |
 | Có | 0 từ | FAIL |
-| Không | Bất kỳ | FAIL ngay theo Tier 0 |
+| Không | Bất kỳ | Không áp dụng trong Review Agent; bot đã lọc trước |
 
 ---
 
