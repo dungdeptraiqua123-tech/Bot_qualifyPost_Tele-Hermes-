@@ -57,6 +57,21 @@ Use it only for:
 
 Phase 2B Recent X Activity research is a Hermes orchestration responsibility, not a normalize/write helper responsibility. Do not add Recent X Activity calls to `scripts/enrich_xauusd_leads.py`.
 
+## Orchestrator Mode
+
+When invoked by `scripts/run_pipeline.py`, Hermes is running in orchestrator mode. In this mode, Hermes must only produce `enriched_leads.normalized.json`.
+
+In orchestrator mode:
+
+- Do not call normalize.
+- Do not call `scripts/enrich_xauusd_leads.py write`.
+- Do not inspect or write the final `enriched_leads.csv`.
+- Do not call `scripts/sync_google_sheet.py`.
+- Do not generate `run_report.json`.
+- Do not run Google Sheets sync.
+
+The orchestrator owns normalize, deterministic CSV writing, Google Sheets sync, and run report generation. Hermes owns only LLM enrichment and writing the enriched JSON.
+
 ## Execution Flow
 
 ### Step 1: Locate Files
@@ -185,6 +200,24 @@ Use this internal enrichment object shape:
 ```
 
 Only `name`, `username`, `score_fit`, `first_line`, and `hook` are needed for the final CSV, but keep `trading_themes`, `persona`, `style_summary`, `evidence`, `reason`, and Phase 2B Recent X Activity fields in the intermediate JSON to make the run auditable.
+
+### Kept Lead Required Fields
+
+Every kept lead with `score_fit >= 7` must include non-empty:
+
+- `name`
+- `username`
+- `score_fit`
+- `first_line`
+- `hook`
+
+If the source `name` is blank but `username` exists, set `name` to the same display handle used in `username`, including the leading `@`. Example: `username = "@goldtrader"` and `name = "@goldtrader"`.
+
+If `username` is blank, reject the lead by setting `score_fit <= 6`.
+
+If `first_line` or `hook` cannot be produced from evidence without inventing facts, reject the lead by setting `score_fit <= 6`.
+
+Do not leave malformed kept leads in `enriched_leads.normalized.json`. Reject them before writing the JSON instead of relying on the deterministic writer to fail and trigger self-repair.
 
 ## Account-Level Reasoning
 
@@ -550,6 +583,8 @@ Do not use Phase 2B to invent facts, profits, recent trades, locations, identity
 ### Step 5: Write Enriched JSON Automatically
 
 Hermes must create `enriched_leads.normalized.json` itself. Do not ask the user to edit it.
+
+Before writing this file, verify that every lead with `score_fit >= 7` satisfies the kept-lead required fields. If a kept lead is missing `name`, use the `@username` fallback. If it is missing `username`, `first_line`, or `hook`, lower `score_fit` to `6` or below before writing.
 
 The file may be either a list:
 
