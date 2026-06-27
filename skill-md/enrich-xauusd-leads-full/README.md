@@ -23,11 +23,13 @@ HERMES_HOME=/opt/hermes-ads/hermes-home \
 Hermes should:
 
 1. Call `normalize` to create `normalized_leads.json`.
-2. Enrich each lead using LLM reasoning and, when useful, `last30days`.
+2. Enrich each unique X account using LLM reasoning and, when useful, `last30days`.
 3. Write `enriched_leads.normalized.json` automatically.
 4. Call `write` to create `enriched_leads.csv`.
 
 There is no manual JSONL editing step.
+
+Apify exports tweet rows, not unique people. The normalize step deduplicates by X handle, so one normalized lead equals one X account with up to 3 `recent_tweets` as evidence.
 
 ## Helper-Only Local Test
 
@@ -43,6 +45,8 @@ python skill-md/enrich-xauusd-leads-full/scripts/enrich_xauusd_leads.py normaliz
   /tmp/xauusd-leads-test/raw_leads.csv \
   --output /tmp/xauusd-leads-test/normalized_leads.json
 ```
+
+The sample contains duplicate handles. Normalize should report fewer unique X accounts than raw CSV rows.
 
 Create a small Hermes-like enriched JSON fixture:
 
@@ -62,7 +66,7 @@ Create a small Hermes-like enriched JSON fixture:
 }
 ```
 
-Then write the CSV:
+Save that fixture at `/tmp/xauusd-leads-test/enriched_leads.normalized.json`, then write the CSV:
 
 ```bash
 python skill-md/enrich-xauusd-leads-full/scripts/enrich_xauusd_leads.py write \
@@ -79,6 +83,8 @@ First-line cá nhân hóa
 Score fit
 Hook
 ```
+
+The writer also drops duplicate output usernames defensively if Hermes accidentally repeats an account in the enriched JSON.
 
 ## Production Deploy Target
 

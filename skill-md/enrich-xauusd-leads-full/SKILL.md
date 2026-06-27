@@ -20,7 +20,7 @@ Run a fully automated Hermes enrichment workflow for X/Twitter XAUUSD / Gold Tra
 Hermes must orchestrate the whole job:
 
 1. Normalize `raw_leads.csv` with the helper script.
-2. Enrich each normalized lead with LLM reasoning.
+2. Enrich each normalized lead with LLM reasoning. One normalized lead is one unique X account, not one tweet.
 3. Use `last30days` only when recent activity would improve scoring or personalization.
 4. Keep only leads with `score_fit >= 7`.
 5. Write `enriched_leads.normalized.json` automatically.
@@ -96,28 +96,42 @@ The helper writes JSON like:
 {
   "schema_version": "xauusd-leads-normalized/v1",
   "source_file": "raw_leads.csv",
+  "raw_row_count": 2,
   "lead_count": 1,
+  "unique_user_count": 1,
   "leads": [
     {
       "row_id": 1,
-      "csv_row_number": 2,
+      "csv_row_numbers": [2, 3],
+      "raw_row_count": 2,
       "name": "Gold Macro Notes",
       "username": "@goldmacronotes",
       "bio": "XAUUSD trader. London session charts and risk plans.",
-      "tweet_text": "XAUUSD respected the 4H supply zone.",
       "profile_url": "https://x.com/goldmacronotes",
       "location": "London UK",
-      "created_at": "2026-06-20T09:15:00Z",
+      "followers_count": "18400",
       "country": "UK",
-      "source_query": "XAUUSD trader UK"
+      "source_query": "XAUUSD trader UK",
+      "recent_tweets": [
+        {
+          "text": "XAUUSD respected the 4H supply zone.",
+          "created_at": "2026-06-20T09:15:00Z",
+          "favorite_count": 42,
+          "csv_row_number": 2
+        }
+      ]
     }
   ]
 }
 ```
 
+The helper deduplicates raw Apify tweet rows by X handle. It normalizes handles case-insensitively, strips a leading `@`, and prefers `user.handle`, then `handle`, then `username`. Multiple tweet rows for the same account become one lead with `recent_tweets`, capped at 3 tweets sorted by newest `created_at` first, then highest `favorite_count`.
+
 ### Step 3: Enrich Leads Automatically
 
-Read `normalized_leads.json`. For each lead, decide score and copy using the scoring and safety rules below.
+Read `normalized_leads.json`. For each unique X account, decide score and copy using the scoring and safety rules below. Do not score the same username twice and do not output duplicate usernames.
+
+Use `recent_tweets` as evidence. The personalized first-line may reference the best tweet or recent-tweets pattern, but only if the evidence is present in `normalized_leads.json` or a successful `last30days` result.
 
 Use this internal enrichment object shape:
 
@@ -215,6 +229,8 @@ The raw CSV may include Apify-style columns:
 - `profile URL`
 - `location`
 - `createdAt`
+- `favorite_count`
+- `followers_count`
 - `country`
 - `source query`
 
@@ -315,11 +331,13 @@ If you trade XAUUSD, cleaner planning usually starts before price reaches the zo
 ## Verification Checklist
 
 - [ ] `normalize` ran successfully and produced `normalized_leads.json`.
+- [ ] Normalized leads are unique X accounts; duplicate raw tweet rows are merged into `recent_tweets`.
 - [ ] Hermes generated `score_fit`, `first_line`, and `hook`; Python did not.
 - [ ] `last30days` was used only when useful and never fabricated.
 - [ ] `enriched_leads.normalized.json` was created automatically by Hermes.
 - [ ] `write` produced `enriched_leads.csv`.
 - [ ] `enriched_leads.csv` has exactly the 5 required columns.
+- [ ] `enriched_leads.csv` has no duplicate usernames.
 - [ ] Every output row has `Score fit >= 7`.
 - [ ] First-lines are evidence-based.
 - [ ] Hooks do not promise profit or risk-free trading.

@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, TextIO
 
@@ -22,27 +23,47 @@ OUTPUT_COLUMNS = [
 
 CANONICAL_FIELDS = [
     "name",
+    "user_handle",
+    "handle",
     "username",
     "bio",
     "tweet_text",
     "profile_url",
     "location",
     "created_at",
+    "favorite_count",
+    "followers_count",
     "country",
     "source_query",
 ]
 
 HEADER_ALIASES = {
-    "name": {"name", "full name", "display name", "author name"},
+    "name": {"name", "full name", "display name", "author name", "user.name"},
+    "user_handle": {
+        "user.handle",
+        "user handle",
+        "userHandle",
+        "author.handle",
+        "author handle",
+    },
+    "handle": {"handle", "screen name", "twitter handle", "x handle"},
     "username": {
         "username",
         "user name",
-        "handle",
-        "screen name",
         "author username",
         "user",
+        "user.username",
+        "user username",
     },
-    "bio": {"bio", "biography", "description", "profile bio", "user bio"},
+    "bio": {
+        "bio",
+        "biography",
+        "description",
+        "profile bio",
+        "user bio",
+        "user.description",
+        "user description",
+    },
     "tweet_text": {
         "tweet text",
         "tweet",
@@ -61,9 +82,28 @@ HEADER_ALIASES = {
         "user url",
         "twitter url",
         "x url",
+        "user.profileUrl",
+        "user.profile_url",
     },
     "location": {"location", "user location", "profile location"},
     "created_at": {"createdAt", "created at", "created_at", "date", "timestamp", "posted at"},
+    "favorite_count": {
+        "favorite_count",
+        "favorite count",
+        "favoriteCount",
+        "favorites",
+        "likes",
+        "like count",
+        "likeCount",
+    },
+    "followers_count": {
+        "followers_count",
+        "followers count",
+        "followersCount",
+        "user.followersCount",
+        "user followers count",
+        "followers",
+    },
     "country": {"country", "source country", "target country"},
     "source_query": {"source query", "query", "search query", "keyword", "apify query"},
 }
@@ -125,6 +165,47 @@ def normalize_username(username: str, profile_url: str = "") -> str:
     return f"@{raw}" if raw else ""
 
 
+def handle_key(username: str) -> str:
+    return clean_cell(username).lstrip("@").lower()
+
+
+def choose_username(row: dict[str, str]) -> str:
+    for key in ("user_handle", "handle", "username"):
+        username = normalize_username(row.get(key, ""))
+        if username:
+            return username
+    return normalize_username("", row.get("profile_url", ""))
+
+
+def coerce_int(value: Any, default: int = 0) -> int:
+    text = clean_cell(value)
+    if not text:
+        return default
+    text = text.replace(",", "")
+    try:
+        return int(float(text))
+    except ValueError:
+        return default
+
+
+def parse_created_at(value: str) -> float:
+    text = clean_cell(value)
+    if not text:
+        return float("-inf")
+    candidates = [text]
+    if text.endswith("Z"):
+        candidates.append(text[:-1] + "+00:00")
+    for candidate in candidates:
+        try:
+            parsed = datetime.fromisoformat(candidate)
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    return float("-inf")
+
+
 def build_header_map(fieldnames: Optional[list[str]]) -> dict[str, str]:
     result: dict[str, str] = {}
     normalized_to_original = {
@@ -155,10 +236,7 @@ def read_raw_leads(path: Path) -> list[dict[str, Any]]:
                 field: clean_cell(raw.get(header_map.get(field, ""), ""))
                 for field in CANONICAL_FIELDS
             }
-            normalized["username"] = normalize_username(
-                normalized.get("username", ""),
-                normalized.get("profile_url", ""),
-            )
+            normalized["username"] = choose_username(normalized)
             if not any(normalized.values()):
                 continue
             rows.append(
@@ -169,6 +247,124 @@ def read_raw_leads(path: Path) -> list[dict[str, Any]]:
                 }
             )
     return rows
+
+
+def tweet_from_row(row: dict[str, Any]) -> Optional[dict[str, Any]]:
+    text = clean_cell(row.get("tweet_text"))
+    if not text:
+        return None
+    return {
+        "text": text,
+        "created_at": clean_cell(row.get("created_at")),
+        "favorite_count": coerce_int(row.get("favorite_count")),
+        "csv_row_number": row.get("csv_row_number"),
+    }
+
+
+def merge_source_value(existing: str, new_value: str) -> str:
+    current = [part.strip() for part in clean_cell(existing).split("|") if part.strip()]
+    new_parts = [part.strip() for part in clean_cell(new_value).split("|") if part.strip()]
+    seen = {part.lower() for part in current}
+    for part in new_parts:
+        if part.lower() not in seen:
+            current.append(part)
+            seen.add(part.lower())
+    return " | ".join(current)
+
+
+def dedupe_tweets(tweets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    best_by_text: dict[str, dict[str, Any]] = {}
+    for tweet in tweets:
+        text_key = clean_cell(tweet.get("text")).lower()
+        if not text_key:
+            continue
+        current = best_by_text.get(text_key)
+        if current is None:
+            best_by_text[text_key] = tweet
+            continue
+        tweet_sort = (parse_created_at(tweet.get("created_at", "")), coerce_int(tweet.get("favorite_count")))
+        current_sort = (
+            parse_created_at(current.get("created_at", "")),
+            coerce_int(current.get("favorite_count")),
+        )
+        if tweet_sort > current_sort:
+            best_by_text[text_key] = tweet
+    return sorted(
+        best_by_text.values(),
+        key=lambda item: (
+            parse_created_at(item.get("created_at", "")),
+            coerce_int(item.get("favorite_count")),
+        ),
+        reverse=True,
+    )[:3]
+
+
+def merge_raw_rows_by_username(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    no_handle_rows: list[dict[str, Any]] = []
+
+    for row in rows:
+        username = normalize_username(row.get("username", ""), row.get("profile_url", ""))
+        key = handle_key(username)
+        if not key:
+            no_handle_rows.append(row)
+            continue
+
+        existing = grouped.get(key)
+        if existing is None:
+            existing = {
+                "row_id": 0,
+                "csv_row_numbers": [],
+                "raw_row_count": 0,
+                "name": "",
+                "username": username,
+                "bio": "",
+                "profile_url": "",
+                "location": "",
+                "followers_count": "",
+                "country": "",
+                "source_query": "",
+                "recent_tweets": [],
+            }
+            grouped[key] = existing
+
+        existing["csv_row_numbers"].append(row.get("csv_row_number"))
+        existing["raw_row_count"] += 1
+        for field in ("name", "bio", "profile_url", "location", "followers_count", "country"):
+            if not existing.get(field) and row.get(field):
+                existing[field] = row[field]
+        existing["source_query"] = merge_source_value(
+            existing.get("source_query", ""),
+            row.get("source_query", ""),
+        )
+        tweet = tweet_from_row(row)
+        if tweet:
+            existing["recent_tweets"].append(tweet)
+
+    leads = list(grouped.values())
+    for row in no_handle_rows:
+        tweet = tweet_from_row(row)
+        lead = {
+            "row_id": 0,
+            "csv_row_numbers": [row.get("csv_row_number")],
+            "raw_row_count": 1,
+            "name": row.get("name", ""),
+            "username": "",
+            "bio": row.get("bio", ""),
+            "profile_url": row.get("profile_url", ""),
+            "location": row.get("location", ""),
+            "followers_count": row.get("followers_count", ""),
+            "country": row.get("country", ""),
+            "source_query": row.get("source_query", ""),
+            "recent_tweets": [tweet] if tweet else [],
+        }
+        leads.append(lead)
+
+    for index, lead in enumerate(leads, start=1):
+        lead["row_id"] = index
+        lead["recent_tweets"] = dedupe_tweets(lead.get("recent_tweets", []))
+
+    return leads
 
 
 def write_json(path: Path, payload: Any) -> None:
@@ -187,12 +383,14 @@ def read_json(path: Path) -> Any:
         raise SystemExit(f"Invalid JSON in {path}: {exc}") from exc
 
 
-def normalized_payload(source: Path, rows: list[dict[str, Any]]) -> dict[str, Any]:
+def normalized_payload(source: Path, raw_rows: list[dict[str, Any]], leads: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "schema_version": "xauusd-leads-normalized/v1",
         "source_file": str(source),
-        "lead_count": len(rows),
-        "leads": rows,
+        "raw_row_count": len(raw_rows),
+        "lead_count": len(leads),
+        "unique_user_count": len(leads),
+        "leads": leads,
     }
 
 
@@ -282,6 +480,7 @@ def output_record(record: dict[str, Any], index: int) -> Optional[dict[str, str]
 def build_output_records(enriched_leads: list[dict[str, Any]]) -> list[dict[str, str]]:
     output: list[dict[str, str]] = []
     errors: list[str] = []
+    seen_usernames: set[str] = set()
     for index, record in enumerate(enriched_leads, start=1):
         try:
             converted = output_record(record, index)
@@ -289,6 +488,11 @@ def build_output_records(enriched_leads: list[dict[str, Any]]) -> list[dict[str,
             errors.append(str(exc))
             continue
         if converted is not None:
+            username_key = handle_key(converted.get("Username X", ""))
+            if username_key and username_key in seen_usernames:
+                continue
+            if username_key:
+                seen_usernames.add(username_key)
             output.append(converted)
     if errors:
         raise SystemExit("Cannot write enriched CSV:\n- " + "\n- ".join(errors))
@@ -305,13 +509,14 @@ def write_enriched_csv(path: Path, records: list[dict[str, str]]) -> None:
 
 def cmd_normalize(args: argparse.Namespace) -> None:
     rows = read_raw_leads(args.input)
-    payload = normalized_payload(args.input, rows)
+    leads = merge_raw_rows_by_username(rows)
+    payload = normalized_payload(args.input, rows, leads)
     if args.output == Path("-"):
         json.dump(payload, sys.stdout, ensure_ascii=False, indent=2)
         sys.stdout.write("\n")
     else:
         write_json(args.output, payload)
-        print(f"Normalized {len(rows)} leads: {args.output}")
+        print(f"Normalized {len(rows)} raw rows into {len(leads)} unique X accounts: {args.output}")
 
 
 def cmd_write(args: argparse.Namespace) -> None:
