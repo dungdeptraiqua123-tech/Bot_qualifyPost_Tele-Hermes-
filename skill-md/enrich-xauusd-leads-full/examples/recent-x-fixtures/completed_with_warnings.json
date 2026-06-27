@@ -1,0 +1,30 @@
+{
+  "schema_version": "recent-x-activity/v1",
+  "username": "@warninggold",
+  "query": "@warninggold XAUUSD gold trading",
+  "window_days": 30,
+  "status": "completed",
+  "source": "xquik",
+  "fetched_at": "2026-06-27T10:00:00Z",
+  "cache_hit": false,
+  "posts": [
+    {
+      "text": "Gold plan for NY: wait for the range break, then only take the retest if risk is clean.",
+      "created_at": "2026-06-26T13:00:00Z",
+      "url": "https://x.com/warninggold/status/2001",
+      "like_count": 13,
+      "reply_count": 1,
+      "repost_count": 2
+    }
+  ],
+  "evidence": {
+    "recent_activity": true,
+    "xauusd_mentions": 0,
+    "gold_mentions": 1,
+    "trading_terms": ["gold", "risk", "retest"],
+    "themes": ["Price Action", "Gold only"],
+    "persona_hint": "Price Action Trader",
+    "summary": "Recent X activity suggests price action trader with themes: Price Action, Gold only; across 0 XAUUSD and 1 gold mention(s)."
+  },
+  "warnings": ["discarded 2 post(s) not authored by @warninggold"]
+}

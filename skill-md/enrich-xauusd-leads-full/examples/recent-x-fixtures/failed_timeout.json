@@ -1,0 +1,21 @@
+{
+  "schema_version": "recent-x-activity/v1",
+  "username": "@goldcandidate",
+  "query": "@goldcandidate XAUUSD gold trading",
+  "window_days": 30,
+  "status": "failed",
+  "source": "xquik",
+  "fetched_at": "2026-06-27T10:00:00Z",
+  "cache_hit": false,
+  "posts": [],
+  "evidence": {
+    "recent_activity": false,
+    "xauusd_mentions": 0,
+    "gold_mentions": 0,
+    "trading_terms": [],
+    "themes": [],
+    "persona_hint": "",
+    "summary": ""
+  },
+  "warnings": ["timeout after 120s: request timed out"]
+}

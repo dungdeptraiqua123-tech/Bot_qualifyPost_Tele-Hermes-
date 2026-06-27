@@ -1,0 +1,38 @@
+{
+  "schema_version": "recent-x-activity/v1",
+  "username": "@goldstructure",
+  "query": "@goldstructure XAUUSD gold trading",
+  "window_days": 30,
+  "status": "completed",
+  "source": "xquik",
+  "fetched_at": "2026-06-27T10:00:00Z",
+  "cache_hit": false,
+  "posts": [
+    {
+      "text": "XAUUSD London plan: price swept buyside liquidity, then respected the 15m order block. Waiting for confirmation before any entry.",
+      "created_at": "2026-06-25T08:40:00Z",
+      "url": "https://x.com/goldstructure/status/1001",
+      "like_count": 34,
+      "reply_count": 4,
+      "repost_count": 6
+    },
+    {
+      "text": "Gold is still cleanest for me when NY open gives displacement away from the FVG. No setup without confirmation.",
+      "created_at": "2026-06-24T13:10:00Z",
+      "url": "https://x.com/goldstructure/status/1002",
+      "like_count": 21,
+      "reply_count": 2,
+      "repost_count": 3
+    }
+  ],
+  "evidence": {
+    "recent_activity": true,
+    "xauusd_mentions": 1,
+    "gold_mentions": 1,
+    "trading_terms": ["xauusd", "gold", "liquidity", "order block", "fvg", "entry"],
+    "themes": ["ICT", "Price Action", "Gold only"],
+    "persona_hint": "ICT Trader",
+    "summary": "Recent X activity suggests ict trader with themes: ICT, Price Action, Gold only; across 1 XAUUSD and 1 gold mention(s)."
+  },
+  "warnings": []
+}

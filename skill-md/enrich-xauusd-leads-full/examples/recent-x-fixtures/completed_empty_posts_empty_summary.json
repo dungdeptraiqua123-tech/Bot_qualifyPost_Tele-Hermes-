@@ -1,0 +1,21 @@
+{
+  "schema_version": "recent-x-activity/v1",
+  "username": "@quietgoldtrader",
+  "query": "@quietgoldtrader XAUUSD gold trading",
+  "window_days": 30,
+  "status": "completed",
+  "source": "xquik",
+  "fetched_at": "2026-06-27T10:00:00Z",
+  "cache_hit": false,
+  "posts": [],
+  "evidence": {
+    "recent_activity": false,
+    "xauusd_mentions": 0,
+    "gold_mentions": 0,
+    "trading_terms": [],
+    "themes": [],
+    "persona_hint": "",
+    "summary": ""
+  },
+  "warnings": ["Xquik returned no usable target-authored posts"]
+}

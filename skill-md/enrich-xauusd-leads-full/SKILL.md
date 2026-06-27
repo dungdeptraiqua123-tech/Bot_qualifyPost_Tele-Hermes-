@@ -1,7 +1,7 @@
 ---
 name: enrich-xauusd-leads-full
-description: "Enrich X/Twitter raw_leads.csv files for XAUUSD/gold trading lead generation: have Hermes normalize Apify lead rows, score fit 1-10 with strict qualification, keep score >=7, generate diverse persona-aware first lines/hooks, and write enriched_leads.csv."
-version: 1.4.0
+description: "Enrich X/Twitter raw_leads.csv files for XAUUSD/gold trading lead generation: have Hermes normalize Apify lead rows, score fit 1-10 with strict qualification, optionally use project-owned Recent X Activity for at most 1 uncertain lead, keep score >=7, generate diverse persona-aware first lines/hooks, and write enriched_leads.csv."
+version: 1.5.0
 author: Duxq
 license: MIT
 platforms: [linux, macos, windows]
@@ -21,7 +21,7 @@ Hermes must orchestrate the whole job:
 
 1. Normalize `raw_leads.csv` with the helper script.
 2. Enrich each normalized lead with LLM reasoning. One normalized lead is one unique X account, not one tweet.
-3. Use normalized CSV evidence as the primary source. In Phase 2, optionally use `last30days` only as a bounded research assist for a small number of uncertain, high-potential leads.
+3. Use normalized CSV evidence as the primary source. In Phase 2B, optionally use the project-owned Recent X Activity helper only as a bounded research assist for at most one uncertain, high-potential lead.
 4. Keep only leads with `score_fit >= 7`.
 5. Write `enriched_leads.normalized.json` automatically.
 6. Call the helper script to write `enriched_leads.csv`.
@@ -44,7 +44,7 @@ Hook
 
 ## Helper Script Contract
 
-The helper script is deterministic only. It must not score leads, generate copy, call models, call `last30days`, scrape X/Twitter, or use external APIs.
+The normalize/write helper script is deterministic only. It must not score leads, generate copy, call models, call Recent X Activity, scrape X/Twitter, or use external APIs.
 
 Use it only for:
 
@@ -55,7 +55,7 @@ Use it only for:
 - validating Hermes-produced enrichment JSON
 - writing final CSV
 
-Phase 2 `last30days` research is a Hermes orchestration responsibility, not a helper responsibility. Do not add `last30days` calls to the helper script.
+Phase 2B Recent X Activity research is a Hermes orchestration responsibility, not a normalize/write helper responsibility. Do not add Recent X Activity calls to `scripts/enrich_xauusd_leads.py`.
 
 ## Execution Flow
 
@@ -143,12 +143,11 @@ Before writing the enrichment object, infer:
 - `persona`: one best-fit persona from the persona taxonomy below.
 - `style_summary`: one short internal phrase describing the trader/account style.
 - `reason`: an internal list explaining why the score was assigned.
-- `research_needed`: whether this lead qualified for optional Phase 2 `last30days` research.
-- `research_reason`: why research was skipped or requested.
-- `research_status`: one of `skipped`, `requested`, `completed`, or `failed`.
-- `research_summary`: optional concise summary from `last30days`, only when research completed or cache was reused.
+- `recent_x_status`: one of `skipped`, `completed`, or `failed`.
+- `recent_x_summary`: optional concise summary from Recent X Activity evidence when lookup completed.
+- `recent_x_cache_hit`: whether the Recent X Activity helper reused same-day cache.
 
-Do not export `trading_themes`, `persona`, `style_summary`, `reason`, `evidence`, `research_needed`, `research_reason`, `research_status`, or `research_summary` to CSV. They are only for auditability in `enriched_leads.normalized.json`.
+Do not export `trading_themes`, `persona`, `style_summary`, `reason`, `evidence`, `recent_x_status`, `recent_x_summary`, or `recent_x_cache_hit` to CSV. They are only for auditability in `enriched_leads.normalized.json`.
 
 Use this internal enrichment object shape:
 
@@ -171,10 +170,9 @@ Use this internal enrichment object shape:
       "London open plan: gold needs a clean break before I touch it."
     ]
   },
-  "research_needed": false,
-  "research_reason": "strong_csv_evidence",
-  "research_status": "skipped",
-  "research_summary": "",
+  "recent_x_status": "skipped",
+  "recent_x_summary": "",
+  "recent_x_cache_hit": false,
   "reason": [
     "Bio explicitly positions the account around XAUUSD trading",
     "Recent tweets repeatedly discuss gold levels and confirmation",
@@ -186,7 +184,7 @@ Use this internal enrichment object shape:
 }
 ```
 
-Only `name`, `username`, `score_fit`, `first_line`, and `hook` are needed for the final CSV, but keep `trading_themes`, `persona`, `style_summary`, `evidence`, `reason`, and Phase 2 research fields in the intermediate JSON to make the run auditable.
+Only `name`, `username`, `score_fit`, `first_line`, and `hook` are needed for the final CSV, but keep `trading_themes`, `persona`, `style_summary`, `evidence`, `reason`, and Phase 2B Recent X Activity fields in the intermediate JSON to make the run auditable.
 
 ## Account-Level Reasoning
 
@@ -200,7 +198,7 @@ Evidence priority:
 2. `bio`: self-declared trader/investor/finance/signal/community identity.
 3. `source_query` and `country`: acquisition context, never sole proof of fit.
 4. `followers_count`: weak supporting signal only; do not score high just because the account is large.
-5. External research: Phase 2 `last30days` is optional, selective, and bounded. It may refine uncertain leads, but CSV evidence remains the primary source.
+5. External research: Phase 2B Recent X Activity is optional, selective, and bounded to at most one lead in the MVP. It may refine uncertain leads, but CSV evidence remains the primary source.
 
 When multiple recent tweets are available, summarize the account-level pattern:
 
@@ -212,7 +210,7 @@ When multiple recent tweets are available, summarize the account-level pattern:
 
 ## Trading Theme Extraction
 
-Populate `trading_themes` with any clearly supported recurring themes. Use evidence from `bio`, `recent_tweets`, normalized account fields, and `research_summary` when Phase 2 research completed. Do not infer themes from stereotypes, country, language, or username alone.
+Populate `trading_themes` with any clearly supported recurring themes. Use evidence from `bio`, `recent_tweets`, normalized account fields, and `recent_x_summary` when Phase 2B research completed. Do not infer themes from stereotypes, country, language, or username alone.
 
 Preferred theme labels:
 
@@ -264,64 +262,57 @@ Persona rules:
 
 `persona` is internal-only and must not appear in `enriched_leads.csv`.
 
-### Step 4: Phase 2 Optional `last30days` Research
+### Step 4: Phase 2B Optional Recent X Activity
 
-`last30days` is a heavy research skill, not the main enrichment engine. Do not call it for every lead. Use it only as a conservative optional assist after initial CSV-only scoring.
+Recent X Activity is a project-owned helper, not a black-box skill and not the main enrichment engine. Do not call it for every lead. Use it only as a conservative optional assist after initial CSV-only scoring.
 
-If the user prompt says `Do not use last30days in this test.` or otherwise clearly disables external research, do not call `last30days` at all. Set every lead's Phase 2 fields to:
+If the user prompt says `Do not use Recent X Activity` or otherwise clearly disables this helper, do not call `scripts/recent_x_activity.py` at all. Set every lead's Recent X fields to:
 
 ```json
 {
-  "research_needed": false,
-  "research_reason": "disabled_by_user",
-  "research_status": "skipped",
-  "research_summary": ""
+  "recent_x_status": "skipped",
+  "recent_x_summary": "",
+  "recent_x_cache_hit": false
 }
 ```
 
-#### Phase 2 Fields
+#### Phase 2B Fields
 
 Every lead in `enriched_leads.normalized.json` must include:
 
 ```json
 {
-  "research_needed": true,
-  "research_reason": "borderline_score_7_8",
-  "research_status": "completed",
-  "research_summary": "Recent X evidence confirms repeated XAUUSD scalping and gold liquidity-zone discussion."
+  "recent_x_status": "completed",
+  "recent_x_summary": "Recent X evidence supports a gold scalping persona with repeated XAUUSD and liquidity-zone discussion.",
+  "recent_x_cache_hit": false
 }
 ```
 
-Allowed `research_status` values:
+For every lead that is not selected for the single Phase 2B lookup, Hermes must set:
+
+```json
+{
+  "recent_x_status": "skipped",
+  "recent_x_summary": "",
+  "recent_x_cache_hit": false
+}
+```
+
+These three fields are required internal audit fields. They must never appear in `enriched_leads.csv`.
+
+Allowed `recent_x_status` values:
 
 | Status | Meaning |
 |---|---|
-| `skipped` | Not selected for `last30days`, disabled by user, cached failure ignored, or disqualified by guardrails |
-| `requested` | Selected and queued for `last30days`; use only as transient state before the final JSON is written |
-| `completed` | `last30days` returned usable output or a same-day completed cache was reused |
-| `failed` | `last30days` failed, timed out, returned empty/unusable output, or could not be executed |
-
-Use concise `research_reason` values such as:
-
-- `disabled_by_user`
-- `strong_csv_evidence`
-- `score_too_low`
-- `obvious_spam_or_irrelevant`
-- `borderline_score_7_8`
-- `high_potential_thin_csv_evidence`
-- `missing_recent_tweets`
-- `weak_recent_tweets`
-- `unclear_persona`
-- `low_confidence`
-- `max_research_accounts_reached`
-- `cache_completed`
-- `last30days_failed`
+| `skipped` | Recent X Activity disabled by user, not selected, backend unavailable, or skipped by helper |
+| `completed` | Helper returned usable Recent X Activity JSON or reused same-day completed cache |
+| `failed` | Helper failed, timed out, returned invalid JSON, or returned unusable evidence |
 
 #### Candidate Selection
 
-First score every lead using CSV evidence only. Then select at most 5 accounts per run for `last30days`.
+First score every lead using CSV evidence only. Then select at most 1 account per run for Recent X Activity in the Phase 2B MVP.
 
-Select only leads that match at least one of these conditions:
+Select only one lead that best matches all or most of these conditions:
 
 - `score_fit` is 7 or 8.
 - High-potential account with thin CSV evidence.
@@ -335,36 +326,68 @@ Skip research when:
 - `score_fit >= 9` with strong CSV evidence.
 - Account is obvious spam, irrelevant, fake-profit, giveaway, adult, crypto-only with no gold/forex angle, or low-information.
 - The same normalized username was already researched in this run.
-- The per-run cap of 5 research accounts has already been reached.
+- One Recent X Activity lookup has already been attempted in this run.
 
 Prioritize selected accounts in this order:
 
 1. Score 8 before score 7.
-2. Missing `recent_tweets`.
+2. Missing or weak `recent_tweets`.
 3. Strong bio/source-query match for XAUUSD, gold, forex, or trading.
 4. Higher account quality signals from CSV evidence.
-5. Most unclear persona where `last30days` could materially improve `first_line` or `hook`.
+5. Most unclear persona where Recent X Activity could materially improve `first_line` or `hook`.
 
 #### Command Shape
 
-For one username, the `last30days` command must use only X search, quick mode, compact output, and no browser-cookie probing:
+For the selected username, call the project-owned helper from the deployed skill directory:
 
 ```bash
-python3 /opt/hermes-ads/hermes-home/skills/last30days/scripts/last30days.py "@username XAUUSD gold trading" --emit=compact --search=x --quick --no-browser-cookies
+python3 {skill_dir}/scripts/recent_x_activity.py \
+  --username "@username" \
+  --query "@username XAUUSD gold trading" \
+  --window-days 30 \
+  --cache-dir /home/hermesads/xauusd-leads/research-cache \
+  --timeout 120 \
+  --emit json
 ```
 
-Run that command with a 120-second timeout from the host/Hermes tool layer. Do not add broad source flags. Do not use HTML output. Do not use competitor mode.
-
-Allowed Phase 2 sources:
+`{skill_dir}` is the directory containing this `SKILL.md`. On the VPS it is typically:
 
 ```text
-x only
+/opt/hermes-ads/hermes-home/skills/lead-gen/enrich-xauusd-leads-full
 ```
 
-Forbidden Phase 2 sources:
+Absolute VPS command example:
+
+```bash
+python3 /opt/hermes-ads/hermes-home/skills/lead-gen/enrich-xauusd-leads-full/scripts/recent_x_activity.py \
+  --username "@username" \
+  --query "@username XAUUSD gold trading" \
+  --window-days 30 \
+  --cache-dir /home/hermesads/xauusd-leads/research-cache \
+  --timeout 120 \
+  --emit json
+```
+
+Hermes must read the returned JSON from stdout. Do not treat this helper as markdown, HTML, or free-form text.
+
+Before using helper output, Hermes must validate:
 
 ```text
-reddit, youtube, tiktok, instagram, hackernews, polymarket, github, web/grounding, perplexity, competitors
+schema_version == "recent-x-activity/v1"
+```
+
+If `schema_version` is missing or different, treat the lookup as failed and continue with CSV-only evidence.
+
+Allowed Phase 2B sources:
+
+```text
+X through the Recent X Activity helper only
+```
+
+Forbidden Phase 2B sources:
+
+```text
+last30days, reddit, youtube, tiktok, instagram, hackernews, polymarket, github, broad web search, perplexity, competitors
 ```
 
 #### Timeout and Failure Behavior
@@ -372,31 +395,42 @@ reddit, youtube, tiktok, instagram, hackernews, polymarket, github, web/groundin
 Guardrails:
 
 ```text
-max_research_accounts = 5
+max_recent_x_accounts = 1
 max_time_per_lookup = 120 seconds
-max_total_research_time = 8 minutes
 ```
 
-If `last30days` fails, times out, exits non-zero, returns empty output, or returns output that is not useful for the username:
+If the helper fails, times out, exits non-zero, emits invalid JSON, returns a wrong `schema_version`, returns `status = "failed"`, or returns output that is not useful for the username:
 
 - Do not fail the overall enrichment pipeline.
 - Do not retry more than once in MVP.
 - Continue with CSV-only evidence.
-- Set `research_status = "failed"`.
-- Set `research_reason = "last30days_failed"` unless a more specific reason was already recorded.
-- Keep `research_summary = ""` or a short failure note if useful for auditability.
+- Set `recent_x_status = "failed"`.
+- Set `recent_x_summary = ""` unless a short failure note is useful for auditability.
+- Set `recent_x_cache_hit` from the helper JSON if available; otherwise use `false`.
 
-Never let Phase 2 failure block writing `enriched_leads.normalized.json` or `enriched_leads.csv`.
+If the helper returns `status = "skipped"`, continue with CSV-only evidence and set:
+
+```json
+{
+  "recent_x_status": "skipped",
+  "recent_x_summary": "",
+  "recent_x_cache_hit": false
+}
+```
+
+Use the helper's `cache_hit` boolean when it is present; use `false` only when the helper did not return a cache value or when Recent X Activity was disabled before any helper call.
+
+Never let Phase 2B failure block writing `enriched_leads.normalized.json` or `enriched_leads.csv`.
 
 #### Cache Strategy
 
-Use the same-day cache folder:
+The helper owns same-day cache behavior. Hermes should pass this cache directory:
 
 ```text
 /home/hermesads/xauusd-leads/research-cache/
 ```
 
-Cache key:
+The helper caches by:
 
 ```text
 lowercase username without @ + current date
@@ -405,47 +439,113 @@ lowercase username without @ + current date
 Example:
 
 ```text
-/home/hermesads/xauusd-leads/research-cache/goldmacronotes-2026-06-27.txt
+/home/hermesads/xauusd-leads/research-cache/goldmacronotes-2026-06-27.json
 ```
 
 Rules:
 
-- Normalize usernames by trimming whitespace, removing a leading `@`, and lowercasing.
-- Use the current date in `YYYY-MM-DD`.
-- If a same-day cache file exists and is non-empty, reuse it instead of calling `last30days`.
+- Normalize usernames by trimming whitespace, removing a leading `@`, and lowercasing before selection.
 - Do not research the same normalized username twice in one run.
-- Cache only the raw compact `last30days` output or a concise extracted summary. Do not put the full report into the final CSV.
+- Use the helper's `cache_hit` value to set `recent_x_cache_hit`.
+- Do not copy cache files into the final CSV.
 
 #### Research Influence
 
-Use `research_summary` only to refine:
+The Recent X Activity helper is the single source of truth for Phase 2B evidence. Hermes must not infer, invent, or embellish any Recent X fact beyond the helper JSON.
+
+Hermes may use only these helper fields:
+
+- `status`
+- `cache_hit`
+- `posts`
+- `evidence.summary`
+- `evidence.themes`
+- `evidence.persona_hint`
+- `evidence.recent_activity`
+- `warnings`
+
+Do not use any other helper field to make claims, adjust scores, change persona, or create reasons.
+
+When the helper returns `status = "completed"`, read only:
+
+- `evidence.summary`
+- `evidence.themes`
+- `evidence.persona_hint`
+- `evidence.recent_activity`
+- `posts`
+- `warnings`
+- `cache_hit`
+
+`status = "completed"` with `posts = []` is still a valid completed lookup. It means no target-authored recent posts were found or every returned post was discarded by the helper's author filter. Do not treat this as failed. Do not fabricate evidence. Continue with CSV-only scoring and copy, but keep the audit status as completed.
+
+Evidence policy:
+
+- If the helper JSON does not contain evidence for a claim, do not state the claim.
+- If `posts = []`, treat that as `No additional recent-X evidence`, not as negative evidence.
+- If `evidence.summary = ""`, treat that as `No additional recent-X evidence`, not as negative evidence.
+- Do not invent engagement, Telegram links, VIP/channel behavior, multi-asset behavior, recent activity, persona changes, trading themes, or score reasons from intuition.
+- Do not use `warnings` as lead-quality evidence. Warnings are operational audit data only.
+
+Use those fields only to refine:
 
 - `score_fit`
+- `persona`
+- `trading_themes`
+- `style_summary`
+- `reason`
 - `first_line`
 - `hook`
-- `reason`
-- `evidence`
-- `style_summary`
-- `trading_themes`
-- `persona`
 
-Do not copy the full `last30days` report into `enriched_leads.normalized.json` except as a local cache artifact. In the enriched JSON, keep `research_summary` short: one to three sentences or compact bullets.
+Score adjustment rules:
 
-Good `research_summary`:
+- Hermes may increase confidence, decrease confidence, raise `score_fit`, or lower `score_fit` only when `evidence.summary`, `posts`, `evidence.themes`, or `evidence.persona_hint` explicitly supports the change.
+- If the helper output does not explicitly support a score change, leave `score_fit` unchanged from the CSV-only score.
+- Empty `posts`, empty `evidence.summary`, or `evidence.recent_activity = false` does not by itself justify lowering the score.
+- Do not raise a score based only on `cache_hit`, `status`, or `warnings`.
 
-```text
-Recent X evidence supports a gold scalping persona: posts mention XAUUSD, London session levels, and liquidity sweeps. No broad multi-source research was used.
+Reason generation rules:
+
+- Every new `reason` introduced after Recent X Activity must trace directly to `evidence.summary`, `posts`, `evidence.themes`, or `evidence.persona_hint`.
+- Do not generate reasons from intuition, likely behavior, country, follower count, username, or missing helper data.
+- When a helper-backed reason is added, phrase it as supported evidence, not as a broader claim.
+
+Set:
+
+```json
+{
+  "recent_x_status": "completed",
+  "recent_x_summary": "<exact evidence.summary value, or empty string>",
+  "recent_x_cache_hit": true
+}
 ```
 
-Bad `research_summary`:
+`recent_x_summary` must be copied from `evidence.summary`. Do not rewrite, expand, polish, or embellish it. If `evidence.summary` is empty, keep `recent_x_summary = ""`.
+
+Do not copy full post payloads into `recent_x_summary`. If a specific recent post materially affects the enrichment, quote or paraphrase only the necessary evidence inside `evidence` or `reason`, and only when that evidence appears in `posts`.
+
+Audit storage rules:
+
+- `recent_x_status`, `recent_x_summary`, and `recent_x_cache_hit` are required internal fields for every lead.
+- Helper `warnings` may be stored inside the lead's internal `evidence.warnings` or a similar JSON-only audit field when useful. Do not expose warnings in the final CSV.
+- Helper `posts` must not be copied wholesale into the final CSV.
+- If helper `posts` are stored, they are JSON-only internal audit data inside `enriched_leads.normalized.json`.
+- Final CSV remains exactly the five-column output contract.
+
+Good `recent_x_summary`:
 
 ```text
-<entire last30days compact report>
+Recent X evidence supports a gold scalping persona: posts mention XAUUSD, London session levels, and liquidity sweeps.
 ```
 
-If research confirms stronger fit, you may raise `score_fit` cautiously. If research finds no relevant XAUUSD/gold/trading evidence, do not automatically reject the lead; keep the CSV-only score unless the lack of evidence confirms low confidence.
+Bad `recent_x_summary`:
 
-Do not use Phase 2 to invent facts, profits, recent trades, locations, identity, or trading outcomes.
+```text
+<entire helper JSON or full post list>
+```
+
+If research confirms stronger fit, you may raise `score_fit` cautiously. If research finds no relevant XAUUSD/gold/trading evidence, keep the CSV-only score unless the new evidence clearly lowers confidence.
+
+Do not use Phase 2B to invent facts, profits, recent trades, locations, identity, or trading outcomes.
 
 ### Step 5: Write Enriched JSON Automatically
 
@@ -465,10 +565,9 @@ The file may be either a list:
     "style_summary": "Intraday price-action analyst focused on gold confirmation zones",
     "first_line": "Your gold notes come across as a patient price-action style, with confirmation around key zones doing most of the filtering.",
     "hook": "For price-action gold traders, the useful edge is often in cleaner zone selection before the entry ever appears.",
-    "research_needed": false,
-    "research_reason": "strong_csv_evidence",
-    "research_status": "skipped",
-    "research_summary": "",
+    "recent_x_status": "skipped",
+    "recent_x_summary": "",
+    "recent_x_cache_hit": false,
     "reason": [
       "Bio explicitly positions the account around XAUUSD trading",
       "Recent tweets repeatedly discuss gold levels and confirmation",
@@ -496,10 +595,9 @@ or an object:
       "style_summary": "Intraday price-action analyst focused on gold confirmation zones",
       "first_line": "Your gold notes come across as a patient price-action style, with confirmation around key zones doing most of the filtering.",
       "hook": "For price-action gold traders, the useful edge is often in cleaner zone selection before the entry ever appears.",
-      "research_needed": false,
-      "research_reason": "strong_csv_evidence",
-      "research_status": "skipped",
-      "research_summary": "",
+      "recent_x_status": "skipped",
+      "recent_x_summary": "",
+      "recent_x_cache_hit": false,
       "reason": [
         "Bio explicitly positions the account around XAUUSD trading",
         "Recent tweets repeatedly discuss gold levels and confirmation",
@@ -643,7 +741,7 @@ For `first_line`:
 
 - Write one short, natural first-line about the trader's apparent style, market focus, or repeated behavior.
 - Prefer account-level wording over tweet-level wording.
-- Refer only to evidence from CSV `recent_tweets`, bio, normalized account fields, and `research_summary` when Phase 2 research completed.
+- Refer only to evidence from CSV `recent_tweets`, bio, normalized account fields, and `recent_x_summary` when Phase 2B research completed.
 - Do not invent recent posts, profits, location, identity, or trading behavior.
 - Do not sound spammy or generic.
 - Avoid fake flattery.
@@ -742,11 +840,11 @@ Simple diversity test:
 - [ ] Hermes reasoned over the account, not one isolated tweet.
 - [ ] Hermes applied strict qualification; weak, spammy, generic, crypto-only, or low-information accounts scored `6` or below.
 - [ ] Hermes generated `score_fit`, `trading_themes`, `persona`, `style_summary`, `reason`, `first_line`, and `hook`; Python did not.
-- [ ] Phase 2 `last30days` was skipped when the user said `Do not use last30days in this test.`
-- [ ] If Phase 2 was enabled, `last30days` was used for at most 5 selected accounts and never for every lead.
-- [ ] If Phase 2 was enabled, each lookup used `--emit=compact --search=x --quick --no-browser-cookies`.
-- [ ] If Phase 2 was enabled, lookup failures did not stop the pipeline.
-- [ ] Every lead includes `research_needed`, `research_reason`, `research_status`, and optional `research_summary` in `enriched_leads.normalized.json`.
+- [ ] Phase 2B Recent X Activity was skipped when the user said `Do not use Recent X Activity`.
+- [ ] If Phase 2B was enabled, `scripts/recent_x_activity.py` was used for at most 1 selected account and never for every lead.
+- [ ] If Phase 2B was enabled, the lookup used `--window-days 30`, `/home/hermesads/xauusd-leads/research-cache`, `--timeout 120`, and `--emit json`.
+- [ ] If Phase 2B was enabled, lookup failures did not stop the pipeline.
+- [ ] Every lead includes `recent_x_status`, `recent_x_summary`, and `recent_x_cache_hit` in `enriched_leads.normalized.json`.
 - [ ] `enriched_leads.normalized.json` was created automatically by Hermes.
 - [ ] `write` produced `enriched_leads.csv`.
 - [ ] `enriched_leads.csv` has exactly the 5 required columns.

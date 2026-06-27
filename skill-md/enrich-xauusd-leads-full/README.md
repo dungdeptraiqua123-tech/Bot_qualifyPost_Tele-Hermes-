@@ -6,9 +6,12 @@ Native Hermes skill source for enriching Apify X/Twitter lead exports for XAUUSD
 
 - `SKILL.md` - Hermes orchestration instructions.
 - `scripts/enrich_xauusd_leads.py` - deterministic CSV/JSON helper.
+- `scripts/recent_x_activity.py` - optional project-owned X-only research helper for one selected uncertain lead.
 - `examples/raw_leads.sample.csv` - small local test input.
+- `references/recent-x-activity-sop.md` - SOP for the Recent X Activity helper.
+- `references/recent-x-activity-output-schema.md` - JSON evidence contract for Recent X Activity.
 
-The helper does not score leads, generate copy, call models, call `last30days`, or call external APIs. Hermes does the enrichment.
+The normalize/write helper does not score leads, generate copy, call models, scrape X/Twitter, or call external APIs. Hermes does the enrichment. The separate Recent X Activity helper is optional and may be called by Hermes for at most one selected uncertain lead.
 
 ## Automated Hermes Flow
 
@@ -23,9 +26,10 @@ HERMES_HOME=/opt/hermes-ads/hermes-home \
 Hermes should:
 
 1. Call `normalize` to create `normalized_leads.json`.
-2. Enrich each unique X account using LLM reasoning and, when useful, `last30days`.
-3. Write `enriched_leads.normalized.json` automatically.
-4. Call `write` to create `enriched_leads.csv`.
+2. Enrich each unique X account using LLM reasoning.
+3. Optionally call `scripts/recent_x_activity.py` for at most one uncertain/high-potential account after initial CSV-only scoring.
+4. Write `enriched_leads.normalized.json` automatically.
+5. Call `write` to create `enriched_leads.csv`.
 
 There is no manual JSONL editing step.
 
@@ -33,7 +37,7 @@ Apify exports tweet rows, not unique people. The normalize step deduplicates by 
 
 ## Helper-Only Local Test
 
-These commands test deterministic file handling only. They do not test LLM scoring or `last30days`.
+These commands test deterministic file handling only. They do not test LLM scoring or Recent X Activity.
 
 From the repository root:
 
@@ -85,6 +89,25 @@ Hook
 ```
 
 The writer also drops duplicate output usernames defensively if Hermes accidentally repeats an account in the enriched JSON.
+
+## Optional Recent X Activity Helper Test
+
+This test verifies the helper's no-key behavior without calling Xquik:
+
+```bash
+mkdir -p /tmp/recent-x-cache-test
+unset XQUIK_API_KEY
+
+python3 skill-md/enrich-xauusd-leads-full/scripts/recent_x_activity.py \
+  --username "@GoldTrader" \
+  --query "@GoldTrader XAUUSD gold trading" \
+  --window-days 30 \
+  --cache-dir /tmp/recent-x-cache-test \
+  --timeout 5 \
+  --emit json
+```
+
+Expected: valid JSON with `status` set to `skipped`, `source` set to `none`, and no pipeline failure.
 
 ## Production Deploy Target
 

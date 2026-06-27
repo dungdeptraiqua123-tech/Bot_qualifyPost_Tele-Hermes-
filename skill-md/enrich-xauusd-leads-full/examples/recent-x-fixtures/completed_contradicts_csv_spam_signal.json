@@ -1,0 +1,38 @@
+{
+  "schema_version": "recent-x-activity/v1",
+  "username": "@goldsignalsfast",
+  "query": "@goldsignalsfast XAUUSD gold trading",
+  "window_days": 30,
+  "status": "completed",
+  "source": "xquik",
+  "fetched_at": "2026-06-27T10:00:00Z",
+  "cache_hit": false,
+  "posts": [
+    {
+      "text": "Signals today: BTC, NASDAQ, US30, oil, EURUSD. Copy trade all entries, TP and SL posted fast.",
+      "created_at": "2026-06-26T09:00:00Z",
+      "url": "https://x.com/goldsignalsfast/status/4001",
+      "like_count": 3,
+      "reply_count": 0,
+      "repost_count": 1
+    },
+    {
+      "text": "VIP signals list: gold only if it moves, otherwise crypto and indices entries all day.",
+      "created_at": "2026-06-25T09:20:00Z",
+      "url": "https://x.com/goldsignalsfast/status/4002",
+      "like_count": 2,
+      "reply_count": 0,
+      "repost_count": 0
+    }
+  ],
+  "evidence": {
+    "recent_activity": true,
+    "xauusd_mentions": 0,
+    "gold_mentions": 1,
+    "trading_terms": ["gold", "signal", "signals", "vip", "tp", "sl", "entry", "copy trade"],
+    "themes": ["Signal Provider", "Multi-asset"],
+    "persona_hint": "Signal Provider",
+    "summary": "Recent X activity suggests signal provider with themes: Signal Provider, Multi-asset; across 0 XAUUSD and 1 gold mention(s)."
+  },
+  "warnings": []
+}

@@ -1,0 +1,30 @@
+{
+  "schema_version": "recent-x-activity/v1",
+  "username": "@cachedgold",
+  "query": "@cachedgold XAUUSD gold trading",
+  "window_days": 30,
+  "status": "completed",
+  "source": "xquik",
+  "fetched_at": "2026-06-27T10:00:00Z",
+  "cache_hit": true,
+  "posts": [
+    {
+      "text": "XAUUSD H4 bias is still bullish, but I only want the pullback into demand before planning risk.",
+      "created_at": "2026-06-23T11:30:00Z",
+      "url": "https://x.com/cachedgold/status/3001",
+      "like_count": 18,
+      "reply_count": 2,
+      "repost_count": 4
+    }
+  ],
+  "evidence": {
+    "recent_activity": true,
+    "xauusd_mentions": 1,
+    "gold_mentions": 0,
+    "trading_terms": ["xauusd", "demand", "risk"],
+    "themes": ["Price Action", "Swing", "Gold only"],
+    "persona_hint": "Swing Trader",
+    "summary": "Recent X activity suggests swing trader with themes: Price Action, Swing, Gold only; across 1 XAUUSD and 0 gold mention(s)."
+  },
+  "warnings": []
+}
