@@ -1,7 +1,7 @@
 ---
 name: enrich-xauusd-leads-full
 description: "Enrich X/Twitter raw_leads.csv files for XAUUSD/gold trading lead generation: have Hermes normalize Apify lead rows, score fit 1-10 with strict qualification, keep score >=7, generate diverse persona-aware first lines/hooks, and write enriched_leads.csv."
-version: 1.3.0
+version: 1.4.0
 author: Duxq
 license: MIT
 platforms: [linux, macos, windows]
@@ -21,7 +21,7 @@ Hermes must orchestrate the whole job:
 
 1. Normalize `raw_leads.csv` with the helper script.
 2. Enrich each normalized lead with LLM reasoning. One normalized lead is one unique X account, not one tweet.
-3. Use only normalized CSV evidence for Phase 1.6 unless the user explicitly asks for external research.
+3. Use normalized CSV evidence as the primary source. In Phase 2, optionally use `last30days` only as a bounded research assist for a small number of uncertain, high-potential leads.
 4. Keep only leads with `score_fit >= 7`.
 5. Write `enriched_leads.normalized.json` automatically.
 6. Call the helper script to write `enriched_leads.csv`.
@@ -54,6 +54,8 @@ Use it only for:
 - writing normalized JSON
 - validating Hermes-produced enrichment JSON
 - writing final CSV
+
+Phase 2 `last30days` research is a Hermes orchestration responsibility, not a helper responsibility. Do not add `last30days` calls to the helper script.
 
 ## Execution Flow
 
@@ -141,8 +143,12 @@ Before writing the enrichment object, infer:
 - `persona`: one best-fit persona from the persona taxonomy below.
 - `style_summary`: one short internal phrase describing the trader/account style.
 - `reason`: an internal list explaining why the score was assigned.
+- `research_needed`: whether this lead qualified for optional Phase 2 `last30days` research.
+- `research_reason`: why research was skipped or requested.
+- `research_status`: one of `skipped`, `requested`, `completed`, or `failed`.
+- `research_summary`: optional concise summary from `last30days`, only when research completed or cache was reused.
 
-Do not export `trading_themes`, `persona`, `style_summary`, `reason`, or `evidence` to CSV. They are only for auditability in `enriched_leads.normalized.json`.
+Do not export `trading_themes`, `persona`, `style_summary`, `reason`, `evidence`, `research_needed`, `research_reason`, `research_status`, or `research_summary` to CSV. They are only for auditability in `enriched_leads.normalized.json`.
 
 Use this internal enrichment object shape:
 
@@ -165,6 +171,10 @@ Use this internal enrichment object shape:
       "London open plan: gold needs a clean break before I touch it."
     ]
   },
+  "research_needed": false,
+  "research_reason": "strong_csv_evidence",
+  "research_status": "skipped",
+  "research_summary": "",
   "reason": [
     "Bio explicitly positions the account around XAUUSD trading",
     "Recent tweets repeatedly discuss gold levels and confirmation",
@@ -176,7 +186,7 @@ Use this internal enrichment object shape:
 }
 ```
 
-Only `name`, `username`, `score_fit`, `first_line`, and `hook` are needed for the final CSV, but keep `trading_themes`, `persona`, `style_summary`, `evidence`, and `reason` in the intermediate JSON to make the run auditable.
+Only `name`, `username`, `score_fit`, `first_line`, and `hook` are needed for the final CSV, but keep `trading_themes`, `persona`, `style_summary`, `evidence`, `reason`, and Phase 2 research fields in the intermediate JSON to make the run auditable.
 
 ## Account-Level Reasoning
 
@@ -190,7 +200,7 @@ Evidence priority:
 2. `bio`: self-declared trader/investor/finance/signal/community identity.
 3. `source_query` and `country`: acquisition context, never sole proof of fit.
 4. `followers_count`: weak supporting signal only; do not score high just because the account is large.
-5. External research: do not use in Phase 1.6 unless the user explicitly asks.
+5. External research: Phase 2 `last30days` is optional, selective, and bounded. It may refine uncertain leads, but CSV evidence remains the primary source.
 
 When multiple recent tweets are available, summarize the account-level pattern:
 
@@ -202,7 +212,7 @@ When multiple recent tweets are available, summarize the account-level pattern:
 
 ## Trading Theme Extraction
 
-Populate `trading_themes` with any clearly supported recurring themes. Use only evidence from `bio`, `recent_tweets`, and normalized account fields. Do not infer themes from stereotypes, country, language, or username alone.
+Populate `trading_themes` with any clearly supported recurring themes. Use evidence from `bio`, `recent_tweets`, normalized account fields, and `research_summary` when Phase 2 research completed. Do not infer themes from stereotypes, country, language, or username alone.
 
 Preferred theme labels:
 
@@ -254,9 +264,188 @@ Persona rules:
 
 `persona` is internal-only and must not appear in `enriched_leads.csv`.
 
-### Step 4: External Research
+### Step 4: Phase 2 Optional `last30days` Research
 
-For Phase 1.6, do not call `last30days` or any external API unless the user explicitly asks. Use only `normalized_leads.json` evidence. If normalized evidence is too weak to qualify the lead, score `6` or below instead of researching around the weakness.
+`last30days` is a heavy research skill, not the main enrichment engine. Do not call it for every lead. Use it only as a conservative optional assist after initial CSV-only scoring.
+
+If the user prompt says `Do not use last30days in this test.` or otherwise clearly disables external research, do not call `last30days` at all. Set every lead's Phase 2 fields to:
+
+```json
+{
+  "research_needed": false,
+  "research_reason": "disabled_by_user",
+  "research_status": "skipped",
+  "research_summary": ""
+}
+```
+
+#### Phase 2 Fields
+
+Every lead in `enriched_leads.normalized.json` must include:
+
+```json
+{
+  "research_needed": true,
+  "research_reason": "borderline_score_7_8",
+  "research_status": "completed",
+  "research_summary": "Recent X evidence confirms repeated XAUUSD scalping and gold liquidity-zone discussion."
+}
+```
+
+Allowed `research_status` values:
+
+| Status | Meaning |
+|---|---|
+| `skipped` | Not selected for `last30days`, disabled by user, cached failure ignored, or disqualified by guardrails |
+| `requested` | Selected and queued for `last30days`; use only as transient state before the final JSON is written |
+| `completed` | `last30days` returned usable output or a same-day completed cache was reused |
+| `failed` | `last30days` failed, timed out, returned empty/unusable output, or could not be executed |
+
+Use concise `research_reason` values such as:
+
+- `disabled_by_user`
+- `strong_csv_evidence`
+- `score_too_low`
+- `obvious_spam_or_irrelevant`
+- `borderline_score_7_8`
+- `high_potential_thin_csv_evidence`
+- `missing_recent_tweets`
+- `weak_recent_tweets`
+- `unclear_persona`
+- `low_confidence`
+- `max_research_accounts_reached`
+- `cache_completed`
+- `last30days_failed`
+
+#### Candidate Selection
+
+First score every lead using CSV evidence only. Then select at most 5 accounts per run for `last30days`.
+
+Select only leads that match at least one of these conditions:
+
+- `score_fit` is 7 or 8.
+- High-potential account with thin CSV evidence.
+- Missing or weak `recent_tweets`.
+- Persona is unclear.
+- Score confidence is low.
+
+Skip research when:
+
+- `score_fit <= 6`.
+- `score_fit >= 9` with strong CSV evidence.
+- Account is obvious spam, irrelevant, fake-profit, giveaway, adult, crypto-only with no gold/forex angle, or low-information.
+- The same normalized username was already researched in this run.
+- The per-run cap of 5 research accounts has already been reached.
+
+Prioritize selected accounts in this order:
+
+1. Score 8 before score 7.
+2. Missing `recent_tweets`.
+3. Strong bio/source-query match for XAUUSD, gold, forex, or trading.
+4. Higher account quality signals from CSV evidence.
+5. Most unclear persona where `last30days` could materially improve `first_line` or `hook`.
+
+#### Command Shape
+
+For one username, the `last30days` command must use only X search, quick mode, compact output, and no browser-cookie probing:
+
+```bash
+python3 /opt/hermes-ads/hermes-home/skills/last30days/scripts/last30days.py "@username XAUUSD gold trading" --emit=compact --search=x --quick --no-browser-cookies
+```
+
+Run that command with a 120-second timeout from the host/Hermes tool layer. Do not add broad source flags. Do not use HTML output. Do not use competitor mode.
+
+Allowed Phase 2 sources:
+
+```text
+x only
+```
+
+Forbidden Phase 2 sources:
+
+```text
+reddit, youtube, tiktok, instagram, hackernews, polymarket, github, web/grounding, perplexity, competitors
+```
+
+#### Timeout and Failure Behavior
+
+Guardrails:
+
+```text
+max_research_accounts = 5
+max_time_per_lookup = 120 seconds
+max_total_research_time = 8 minutes
+```
+
+If `last30days` fails, times out, exits non-zero, returns empty output, or returns output that is not useful for the username:
+
+- Do not fail the overall enrichment pipeline.
+- Do not retry more than once in MVP.
+- Continue with CSV-only evidence.
+- Set `research_status = "failed"`.
+- Set `research_reason = "last30days_failed"` unless a more specific reason was already recorded.
+- Keep `research_summary = ""` or a short failure note if useful for auditability.
+
+Never let Phase 2 failure block writing `enriched_leads.normalized.json` or `enriched_leads.csv`.
+
+#### Cache Strategy
+
+Use the same-day cache folder:
+
+```text
+/home/hermesads/xauusd-leads/research-cache/
+```
+
+Cache key:
+
+```text
+lowercase username without @ + current date
+```
+
+Example:
+
+```text
+/home/hermesads/xauusd-leads/research-cache/goldmacronotes-2026-06-27.txt
+```
+
+Rules:
+
+- Normalize usernames by trimming whitespace, removing a leading `@`, and lowercasing.
+- Use the current date in `YYYY-MM-DD`.
+- If a same-day cache file exists and is non-empty, reuse it instead of calling `last30days`.
+- Do not research the same normalized username twice in one run.
+- Cache only the raw compact `last30days` output or a concise extracted summary. Do not put the full report into the final CSV.
+
+#### Research Influence
+
+Use `research_summary` only to refine:
+
+- `score_fit`
+- `first_line`
+- `hook`
+- `reason`
+- `evidence`
+- `style_summary`
+- `trading_themes`
+- `persona`
+
+Do not copy the full `last30days` report into `enriched_leads.normalized.json` except as a local cache artifact. In the enriched JSON, keep `research_summary` short: one to three sentences or compact bullets.
+
+Good `research_summary`:
+
+```text
+Recent X evidence supports a gold scalping persona: posts mention XAUUSD, London session levels, and liquidity sweeps. No broad multi-source research was used.
+```
+
+Bad `research_summary`:
+
+```text
+<entire last30days compact report>
+```
+
+If research confirms stronger fit, you may raise `score_fit` cautiously. If research finds no relevant XAUUSD/gold/trading evidence, do not automatically reject the lead; keep the CSV-only score unless the lack of evidence confirms low confidence.
+
+Do not use Phase 2 to invent facts, profits, recent trades, locations, identity, or trading outcomes.
 
 ### Step 5: Write Enriched JSON Automatically
 
@@ -276,6 +465,10 @@ The file may be either a list:
     "style_summary": "Intraday price-action analyst focused on gold confirmation zones",
     "first_line": "Your gold notes come across as a patient price-action style, with confirmation around key zones doing most of the filtering.",
     "hook": "For price-action gold traders, the useful edge is often in cleaner zone selection before the entry ever appears.",
+    "research_needed": false,
+    "research_reason": "strong_csv_evidence",
+    "research_status": "skipped",
+    "research_summary": "",
     "reason": [
       "Bio explicitly positions the account around XAUUSD trading",
       "Recent tweets repeatedly discuss gold levels and confirmation",
@@ -303,6 +496,10 @@ or an object:
       "style_summary": "Intraday price-action analyst focused on gold confirmation zones",
       "first_line": "Your gold notes come across as a patient price-action style, with confirmation around key zones doing most of the filtering.",
       "hook": "For price-action gold traders, the useful edge is often in cleaner zone selection before the entry ever appears.",
+      "research_needed": false,
+      "research_reason": "strong_csv_evidence",
+      "research_status": "skipped",
+      "research_summary": "",
       "reason": [
         "Bio explicitly positions the account around XAUUSD trading",
         "Recent tweets repeatedly discuss gold levels and confirmation",
@@ -446,7 +643,7 @@ For `first_line`:
 
 - Write one short, natural first-line about the trader's apparent style, market focus, or repeated behavior.
 - Prefer account-level wording over tweet-level wording.
-- Refer only to evidence from CSV `recent_tweets`, bio, and normalized account fields.
+- Refer only to evidence from CSV `recent_tweets`, bio, normalized account fields, and `research_summary` when Phase 2 research completed.
 - Do not invent recent posts, profits, location, identity, or trading behavior.
 - Do not sound spammy or generic.
 - Avoid fake flattery.
@@ -545,7 +742,11 @@ Simple diversity test:
 - [ ] Hermes reasoned over the account, not one isolated tweet.
 - [ ] Hermes applied strict qualification; weak, spammy, generic, crypto-only, or low-information accounts scored `6` or below.
 - [ ] Hermes generated `score_fit`, `trading_themes`, `persona`, `style_summary`, `reason`, `first_line`, and `hook`; Python did not.
-- [ ] No `last30days`, Google Sheets, GitHub sync, CRM, or external API work was used in Phase 1.6.
+- [ ] Phase 2 `last30days` was skipped when the user said `Do not use last30days in this test.`
+- [ ] If Phase 2 was enabled, `last30days` was used for at most 5 selected accounts and never for every lead.
+- [ ] If Phase 2 was enabled, each lookup used `--emit=compact --search=x --quick --no-browser-cookies`.
+- [ ] If Phase 2 was enabled, lookup failures did not stop the pipeline.
+- [ ] Every lead includes `research_needed`, `research_reason`, `research_status`, and optional `research_summary` in `enriched_leads.normalized.json`.
 - [ ] `enriched_leads.normalized.json` was created automatically by Hermes.
 - [ ] `write` produced `enriched_leads.csv`.
 - [ ] `enriched_leads.csv` has exactly the 5 required columns.
