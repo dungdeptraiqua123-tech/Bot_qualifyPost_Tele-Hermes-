@@ -101,10 +101,28 @@ def resolve_artifact_paths(args: argparse.Namespace, work_dir: Path) -> None:
         "csv",
         "google_sheet_json",
         "run_report",
+        "github_sync_json",
     ):
         path = getattr(args, attr)
         if not path.is_absolute():
             setattr(args, attr, work_dir / path)
+
+
+def skipped_step(name: str, *, fatal: bool = False, reason: str = "") -> dict[str, Any]:
+    now = utc_now()
+    step: dict[str, Any] = {
+        "name": name,
+        "status": "skipped",
+        "fatal": fatal,
+        "returncode": None,
+        "command": [],
+        "started_at": isoformat_utc(now),
+        "finished_at": isoformat_utc(now),
+        "duration_seconds": 0,
+    }
+    if reason:
+        step["reason"] = reason
+    return step
 
 
 def run_command(
@@ -116,6 +134,7 @@ def run_command(
     timeout: Optional[int] = None,
     fatal: bool = True,
 ) -> tuple[dict[str, Any], subprocess.CompletedProcess[str]]:
+    started_at = utc_now()
     try:
         completed = subprocess.run(
             command,
@@ -126,6 +145,7 @@ def run_command(
             timeout=timeout,
             check=False,
         )
+        finished_at = utc_now()
         status = "completed" if completed.returncode == 0 else "failed"
         step = {
             "name": name,
@@ -133,28 +153,39 @@ def run_command(
             "fatal": fatal,
             "returncode": completed.returncode,
             "command": command_for_summary(command),
+            "started_at": isoformat_utc(started_at),
+            "finished_at": isoformat_utc(finished_at),
+            "duration_seconds": max(0, int((finished_at - started_at).total_seconds())),
         }
         if completed.returncode != 0:
             step["error"] = safe_tail(completed.stderr or completed.stdout)
         return step, completed
     except subprocess.TimeoutExpired as exc:
+        finished_at = utc_now()
         step = {
             "name": name,
             "status": "failed",
             "fatal": fatal,
             "returncode": None,
             "command": command_for_summary(command),
+            "started_at": isoformat_utc(started_at),
+            "finished_at": isoformat_utc(finished_at),
+            "duration_seconds": max(0, int((finished_at - started_at).total_seconds())),
             "error": f"timeout after {timeout}s: {safe_tail(str(exc))}",
         }
         completed = subprocess.CompletedProcess(command, returncode=124, stdout="", stderr=str(exc))
         return step, completed
     except OSError as exc:
+        finished_at = utc_now()
         step = {
             "name": name,
             "status": "failed",
             "fatal": fatal,
             "returncode": None,
             "command": command_for_summary(command),
+            "started_at": isoformat_utc(started_at),
+            "finished_at": isoformat_utc(finished_at),
+            "duration_seconds": max(0, int((finished_at - started_at).total_seconds())),
             "error": str(exc),
         }
         completed = subprocess.CompletedProcess(command, returncode=127, stdout="", stderr=str(exc))
@@ -190,9 +221,10 @@ def build_summary(
     steps: list[dict[str, Any]],
     google_payload: Optional[dict[str, Any]],
     run_report_payload: Optional[dict[str, Any]],
+    github_payload: Optional[dict[str, Any]],
 ) -> dict[str, Any]:
-    fatal_failed = any(step["status"] != "completed" and step.get("fatal") for step in steps)
-    nonfatal_failed = any(step["status"] != "completed" and not step.get("fatal") for step in steps)
+    fatal_failed = any(step["status"] == "failed" and step.get("fatal") for step in steps)
+    nonfatal_failed = any(step["status"] == "failed" and not step.get("fatal") for step in steps)
     if fatal_failed:
         status = "failed"
     elif nonfatal_failed:
@@ -214,6 +246,7 @@ def build_summary(
             "csv": str(args.csv),
             "google_sheet_sync": str(args.google_sheet_json),
             "run_report": str(args.run_report),
+            "github_sync": str(args.github_sync_json),
         },
     }
     if google_payload is not None:
@@ -228,6 +261,16 @@ def build_summary(
             "status": run_report_payload.get("status"),
             "schema_version": run_report_payload.get("schema_version"),
         }
+    if github_payload is not None:
+        summary["github_sync"] = {
+            "status": github_payload.get("status"),
+            "commit_created": github_payload.get("commit_created"),
+            "commit_sha": github_payload.get("commit_sha"),
+            "pushed": github_payload.get("pushed"),
+            "warnings": github_payload.get("warnings", []),
+        }
+        if github_payload.get("error"):
+            summary["github_sync"]["error"] = github_payload.get("error")
     return summary
 
 
@@ -248,6 +291,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
     steps: list[dict[str, Any]] = []
     google_payload: Optional[dict[str, Any]] = None
     run_report_payload: Optional[dict[str, Any]] = None
+    github_payload: Optional[dict[str, Any]] = None
 
     normalize_cmd = [
         sys.executable,
@@ -266,7 +310,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
     )
     steps.append(step)
     if completed.returncode != 0:
-        return finish_with_report(args, started_at, steps, google_payload, run_report_payload, work_dir)
+        return finish_with_report(args, started_at, steps, google_payload, run_report_payload, github_payload, work_dir)
 
     hermes_cmd = [
         args.hermes_bin,
@@ -287,7 +331,25 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
     )
     steps.append(step)
     if completed.returncode != 0:
-        return finish_with_report(args, started_at, steps, google_payload, run_report_payload, work_dir)
+        return finish_with_report(args, started_at, steps, google_payload, run_report_payload, github_payload, work_dir)
+
+    validate_cmd = [
+        sys.executable,
+        str(scripts / "enrich_xauusd_leads.py"),
+        "validate",
+        "--input",
+        str(args.enriched_json),
+    ]
+    step, completed = run_command(
+        name="validate_enriched_json",
+        command=validate_cmd,
+        cwd=work_dir,
+        fatal=True,
+        timeout=args.step_timeout,
+    )
+    steps.append(step)
+    if completed.returncode != 0:
+        return finish_with_report(args, started_at, steps, google_payload, run_report_payload, github_payload, work_dir)
 
     write_cmd = [
         sys.executable,
@@ -307,7 +369,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
     )
     steps.append(step)
     if completed.returncode != 0:
-        return finish_with_report(args, started_at, steps, google_payload, run_report_payload, work_dir)
+        return finish_with_report(args, started_at, steps, google_payload, run_report_payload, github_payload, work_dir)
 
     google_cmd = [
         sys.executable,
@@ -343,7 +405,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         step.setdefault("error", str(google_payload.get("error", "google_sheet_sync_failed")))
     steps.append(step)
 
-    return finish_with_report(args, started_at, steps, google_payload, run_report_payload, work_dir)
+    return finish_with_report(args, started_at, steps, google_payload, run_report_payload, github_payload, work_dir)
 
 
 def finish_with_report(
@@ -352,6 +414,7 @@ def finish_with_report(
     steps: list[dict[str, Any]],
     google_payload: Optional[dict[str, Any]],
     run_report_payload: Optional[dict[str, Any]],
+    github_payload: Optional[dict[str, Any]],
     work_dir: Path,
 ) -> dict[str, Any]:
     scripts = script_dir()
@@ -391,6 +454,70 @@ def finish_with_report(
     if run_report_payload is None and completed.returncode != 0:
         step.setdefault("error", safe_tail(completed.stderr or completed.stdout))
     steps.append(step)
+
+    if args.skip_github_sync:
+        github_payload = {
+            "schema_version": "github-sync/v1",
+            "status": "skipped",
+            "files_copied": [],
+            "commit_created": False,
+            "commit_sha": "",
+            "pushed": False,
+            "warnings": ["github_sync_skipped_by_cli"],
+        }
+        step = skipped_step("github_sync", fatal=False, reason="skip_github_sync")
+        try:
+            write_json(args.github_sync_json, github_payload)
+        except OSError as exc:
+            step["status"] = "failed"
+            step["error"] = f"github_sync_json_write_failed: {exc}"
+        steps.append(step)
+    else:
+        github_cmd = [
+            sys.executable,
+            str(scripts / "sync_github.py"),
+            "--csv",
+            str(args.csv),
+            "--run-report",
+            str(args.run_report),
+            "--google-sheet-json",
+            str(args.google_sheet_json),
+            "--run-id",
+            args.run_id,
+            "--repo-dir",
+            args.github_repo_dir,
+            "--output-dir",
+            args.github_output_dir,
+        ]
+        step, completed = run_command(
+            name="github_sync",
+            command=github_cmd,
+            cwd=work_dir,
+            fatal=False,
+            timeout=args.step_timeout,
+        )
+        github_payload = parse_json_stdout(completed.stdout)
+        if github_payload is None:
+            github_payload = {
+                "schema_version": "github-sync/v1",
+                "status": "failed",
+                "files_copied": [],
+                "commit_created": False,
+                "commit_sha": "",
+                "pushed": False,
+                "warnings": [],
+                "error": step.get("error", "invalid_github_sync_json"),
+            }
+        try:
+            write_json(args.github_sync_json, github_payload)
+        except OSError as exc:
+            step["status"] = "failed"
+            step["error"] = f"github_sync_json_write_failed: {exc}"
+        if github_payload.get("status") != "completed":
+            step["status"] = "failed"
+            step.setdefault("error", str(github_payload.get("error", "github_sync_failed")))
+        steps.append(step)
+
     return build_summary(
         args=args,
         started_at=started_at,
@@ -398,6 +525,7 @@ def finish_with_report(
         steps=steps,
         google_payload=google_payload,
         run_report_payload=run_report_payload,
+        github_payload=github_payload,
     )
 
 
@@ -412,6 +540,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--csv", type=Path, default=Path("enriched_leads.csv"))
     parser.add_argument("--google-sheet-json", type=Path, default=Path("google_sheet_sync.json"))
     parser.add_argument("--run-report", type=Path, default=Path("run_report.json"))
+    parser.add_argument("--github-sync-json", type=Path, default=Path("github_sync.json"))
+    parser.add_argument("--github-repo-dir", default=os.environ.get("GITHUB_SYNC_REPO_DIR", ""))
+    parser.add_argument("--github-output-dir", default=os.environ.get("GITHUB_SYNC_OUTPUT_DIR", ""))
+    parser.add_argument("--skip-github-sync", action="store_true")
     parser.add_argument("--hermes-bin", default=os.environ.get("HERMES_BIN", DEFAULT_HERMES_BIN))
     parser.add_argument("--hermes-home", default=os.environ.get("HERMES_HOME", DEFAULT_HERMES_HOME))
     parser.add_argument("--skill", default=DEFAULT_SKILL)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import csv
 import json
 import os
@@ -21,6 +22,8 @@ OUTPUT_COLUMNS = [
     "Hook",
 ]
 
+VALIDATION_SCHEMA_VERSION = "xauusd-enriched-validation/v1"
+
 CANONICAL_FIELDS = [
     "name",
     "user_handle",
@@ -35,6 +38,32 @@ CANONICAL_FIELDS = [
     "followers_count",
     "country",
     "source_query",
+]
+
+TEAM_ACCOUNT_SOURCE_FORMAT = "team_account_csv"
+
+TEAM_ACCOUNT_FIELDS = [
+    "country",
+    "handle",
+    "display_name",
+    "followers_estimate",
+    "bio_snippet",
+    "profile_url",
+    "why_relevant",
+    "niche",
+    "source_urls",
+    "discovered_at",
+    "created_at",
+]
+
+EXTRA_LEAD_FIELDS = [
+    "profile_text",
+    "why_relevant",
+    "niche",
+    "source_urls",
+    "followers_estimate",
+    "discovered_at",
+    "raw_source_format",
 ]
 
 HEADER_ALIASES = {
@@ -221,31 +250,148 @@ def build_header_map(fieldnames: Optional[list[str]]) -> dict[str, str]:
     return result
 
 
+def read_csv_records(path: Path) -> tuple[list[str], list[dict[str, str]]]:
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.reader(handle)
+        try:
+            fieldnames = next(reader)
+        except StopIteration:
+            raise SystemExit(f"Input CSV has no header row: {path}") from None
+        if not any(clean_cell(header) for header in fieldnames):
+            raise SystemExit(f"Input CSV has no header row: {path}")
+
+        rows: list[dict[str, str]] = []
+        for csv_row_number, values in enumerate(reader, start=2):
+            raw: dict[str, str] = {"__csv_row_number": str(csv_row_number)}
+            for index, header in enumerate(fieldnames):
+                clean_header = clean_cell(header)
+                if not clean_header:
+                    continue
+                value = clean_cell(values[index] if index < len(values) else "")
+                if not value and clean_header in raw:
+                    continue
+                if clean_header not in raw or not raw[clean_header]:
+                    raw[clean_header] = value
+            if any(value for key, value in raw.items() if key != "__csv_row_number"):
+                rows.append(raw)
+    return fieldnames, rows
+
+
+def is_team_account_format(fieldnames: list[str]) -> bool:
+    normalized = {normalize_key(header) for header in fieldnames if clean_cell(header)}
+    return normalize_key("handle") in normalized and normalize_key("bio_snippet") in normalized
+
+
+def value_by_header(raw: dict[str, str], *headers: str) -> str:
+    by_normalized = {
+        normalize_key(header): value
+        for header, value in raw.items()
+        if header != "__csv_row_number"
+    }
+    for header in headers:
+        value = by_normalized.get(normalize_key(header), "")
+        if value:
+            return clean_cell(value)
+    return ""
+
+
+def parse_source_urls(value: str) -> Any:
+    text = clean_cell(value)
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            parsed = ast.literal_eval(text)
+        except (ValueError, SyntaxError):
+            parsed = None
+    if isinstance(parsed, list):
+        return [clean_cell(item) for item in parsed if clean_cell(item)]
+    if isinstance(parsed, str):
+        return [clean_cell(parsed)] if clean_cell(parsed) else []
+    return text
+
+
+def team_source_query(niche: str, why_relevant: str) -> str:
+    parts = []
+    for value in (niche, why_relevant):
+        cleaned = clean_cell(value)
+        if cleaned and cleaned.lower() not in {part.lower() for part in parts}:
+            parts.append(cleaned)
+    return " | ".join(parts)
+
+
+def read_team_account_rows(raw_rows: list[dict[str, str]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for raw in raw_rows:
+        handle = value_by_header(raw, "handle")
+        username = normalize_username(handle)
+        display_name = value_by_header(raw, "display_name", "display name")
+        bio = value_by_header(raw, "bio_snippet", "bio snippet")
+        why_relevant = value_by_header(raw, "why_relevant", "why relevant")
+        niche = value_by_header(raw, "niche")
+        normalized = {
+            field: ""
+            for field in CANONICAL_FIELDS
+        }
+        normalized.update(
+            {
+                "name": display_name or username,
+                "handle": handle,
+                "username": username,
+                "bio": bio,
+                "profile_text": bio,
+                "profile_url": value_by_header(raw, "profile_url", "profile url"),
+                "created_at": value_by_header(raw, "created_at", "created at"),
+                "followers_count": value_by_header(raw, "followers_estimate", "followers estimate"),
+                "followers_estimate": value_by_header(raw, "followers_estimate", "followers estimate"),
+                "country": value_by_header(raw, "country"),
+                "source_query": team_source_query(niche, why_relevant),
+                "why_relevant": why_relevant,
+                "niche": niche,
+                "source_urls": parse_source_urls(value_by_header(raw, "source_urls", "source urls")),
+                "discovered_at": value_by_header(raw, "discovered_at", "discovered at"),
+                "raw_source_format": TEAM_ACCOUNT_SOURCE_FORMAT,
+            }
+        )
+        if not any(normalized.values()):
+            continue
+        rows.append(
+            {
+                "row_id": len(rows) + 1,
+                "csv_row_number": coerce_int(raw.get("__csv_row_number"), len(rows) + 2),
+                **normalized,
+            }
+        )
+    return rows
+
+
 def read_raw_leads(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         raise SystemExit(f"Input CSV not found: {path}")
 
-    with path.open("r", encoding="utf-8-sig", newline="") as handle:
-        reader = csv.DictReader(handle)
-        if not reader.fieldnames:
-            raise SystemExit(f"Input CSV has no header row: {path}")
-        header_map = build_header_map(reader.fieldnames)
-        rows: list[dict[str, Any]] = []
-        for csv_row_number, raw in enumerate(reader, start=2):
-            normalized = {
-                field: clean_cell(raw.get(header_map.get(field, ""), ""))
-                for field in CANONICAL_FIELDS
+    fieldnames, raw_rows = read_csv_records(path)
+    if is_team_account_format(fieldnames):
+        return read_team_account_rows(raw_rows)
+
+    header_map = build_header_map(fieldnames)
+    rows: list[dict[str, Any]] = []
+    for raw in raw_rows:
+        normalized = {
+            field: clean_cell(raw.get(header_map.get(field, ""), ""))
+            for field in CANONICAL_FIELDS
+        }
+        normalized["username"] = choose_username(normalized)
+        if not any(normalized.values()):
+            continue
+        rows.append(
+            {
+                "row_id": len(rows) + 1,
+                "csv_row_number": coerce_int(raw.get("__csv_row_number"), len(rows) + 2),
+                **normalized,
             }
-            normalized["username"] = choose_username(normalized)
-            if not any(normalized.values()):
-                continue
-            rows.append(
-                {
-                    "row_id": len(rows) + 1,
-                    "csv_row_number": csv_row_number,
-                    **normalized,
-                }
-            )
+        )
     return rows
 
 
@@ -270,6 +416,19 @@ def merge_source_value(existing: str, new_value: str) -> str:
             current.append(part)
             seen.add(part.lower())
     return " | ".join(current)
+
+
+def merge_list_values(existing: Any, new_value: Any) -> list[str]:
+    current = existing if isinstance(existing, list) else [existing] if clean_cell(existing) else []
+    incoming = new_value if isinstance(new_value, list) else [new_value] if clean_cell(new_value) else []
+    merged: list[str] = []
+    seen: set[str] = set()
+    for value in [*current, *incoming]:
+        cleaned = clean_cell(value)
+        if cleaned and cleaned.lower() not in seen:
+            merged.append(cleaned)
+            seen.add(cleaned.lower())
+    return merged
 
 
 def dedupe_tweets(tweets: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -324,8 +483,11 @@ def merge_raw_rows_by_username(rows: list[dict[str, Any]]) -> list[dict[str, Any
                 "followers_count": "",
                 "country": "",
                 "source_query": "",
+                "created_at": "",
                 "recent_tweets": [],
             }
+            for field in EXTRA_LEAD_FIELDS:
+                existing[field] = [] if field == "source_urls" else ""
             grouped[key] = existing
 
         existing["csv_row_numbers"].append(row.get("csv_row_number"))
@@ -333,6 +495,13 @@ def merge_raw_rows_by_username(rows: list[dict[str, Any]]) -> list[dict[str, Any
         for field in ("name", "bio", "profile_url", "location", "followers_count", "country"):
             if not existing.get(field) and row.get(field):
                 existing[field] = row[field]
+        for field in EXTRA_LEAD_FIELDS:
+            if field == "source_urls":
+                existing[field] = merge_list_values(existing.get(field), row.get(field))
+            elif not existing.get(field) and row.get(field):
+                existing[field] = row[field]
+        if row.get("raw_source_format") == TEAM_ACCOUNT_SOURCE_FORMAT and not existing.get("created_at"):
+            existing["created_at"] = row.get("created_at", "")
         existing["source_query"] = merge_source_value(
             existing.get("source_query", ""),
             row.get("source_query", ""),
@@ -356,13 +525,22 @@ def merge_raw_rows_by_username(rows: list[dict[str, Any]]) -> list[dict[str, Any
             "followers_count": row.get("followers_count", ""),
             "country": row.get("country", ""),
             "source_query": row.get("source_query", ""),
+            "created_at": row.get("created_at", "") if row.get("raw_source_format") == TEAM_ACCOUNT_SOURCE_FORMAT else "",
             "recent_tweets": [tweet] if tweet else [],
         }
+        for field in EXTRA_LEAD_FIELDS:
+            lead[field] = row.get(field, [] if field == "source_urls" else "")
         leads.append(lead)
 
     for index, lead in enumerate(leads, start=1):
         lead["row_id"] = index
         lead["recent_tweets"] = dedupe_tweets(lead.get("recent_tweets", []))
+        if lead.get("raw_source_format") != TEAM_ACCOUNT_SOURCE_FORMAT:
+            for field in EXTRA_LEAD_FIELDS:
+                if not lead.get(field):
+                    lead.pop(field, None)
+            if not lead.get("created_at"):
+                lead.pop("created_at", None)
 
     return leads
 
@@ -428,9 +606,13 @@ def coerce_score(value: Any, *, row_label: str) -> int:
     return score
 
 
-def output_record(record: dict[str, Any], index: int) -> Optional[dict[str, str]]:
+def row_label_for(record: dict[str, Any], index: int) -> str:
     row_id = value_from(record, "row_id", "id")
-    row_label = f"lead #{index}" if row_id in {None, ""} else f"row_id={row_id}"
+    return f"lead #{index}" if row_id in {None, ""} else f"row_id={row_id}"
+
+
+def output_record(record: dict[str, Any], index: int) -> Optional[dict[str, str]]:
+    row_label = row_label_for(record, index)
 
     score = coerce_score(
         value_from(record, "score_fit", "score fit", "score"),
@@ -474,6 +656,64 @@ def output_record(record: dict[str, Any], index: int) -> Optional[dict[str, str]
         "First-line cá nhân hóa": first_line,
         "Score fit": str(score),
         "Hook": hook,
+    }
+
+
+def validate_enriched_leads(enriched_leads: list[dict[str, Any]]) -> dict[str, Any]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    kept_leads = 0
+    rejected_leads = 0
+
+    for index, record in enumerate(enriched_leads, start=1):
+        row_label = row_label_for(record, index)
+        try:
+            score = coerce_score(
+                value_from(record, "score_fit", "score fit", "score"),
+                row_label=row_label,
+            )
+        except ValueError as exc:
+            errors.append(str(exc))
+            continue
+
+        if score < 7:
+            rejected_leads += 1
+            continue
+
+        kept_leads += 1
+        name = clean_cell(value_from(record, "Name", "name"))
+        username = normalize_username(
+            clean_cell(value_from(record, "Username X", "username_x", "username", "handle")),
+            clean_cell(value_from(record, "profile_url", "profile url")),
+        )
+        first_line = clean_cell(
+            value_from(
+                record,
+                "First-line cá nhân hóa",
+                "first_line",
+                "first line",
+                "personalized_first_line",
+                "personalized first line",
+            )
+        )
+        hook = clean_cell(value_from(record, "Hook", "hook"))
+
+        if not name:
+            errors.append(f"{row_label} kept lead missing name")
+        if not username:
+            errors.append(f"{row_label} kept lead missing username")
+        if not first_line:
+            errors.append(f"{row_label} kept lead missing first_line")
+        if not hook:
+            errors.append(f"{row_label} kept lead missing hook")
+
+    return {
+        "schema_version": VALIDATION_SCHEMA_VERSION,
+        "status": "failed" if errors else "completed",
+        "kept_leads": kept_leads,
+        "rejected_leads": rejected_leads,
+        "errors": errors,
+        "warnings": warnings,
     }
 
 
@@ -527,6 +767,26 @@ def cmd_write(args: argparse.Namespace) -> None:
     print(f"Wrote {len(records)} enriched leads: {args.output}")
 
 
+def cmd_validate(args: argparse.Namespace) -> None:
+    try:
+        payload = read_json(args.input)
+        enriched_leads = extract_leads_payload(payload)
+        result = validate_enriched_leads(enriched_leads)
+    except SystemExit as exc:
+        result = {
+            "schema_version": VALIDATION_SCHEMA_VERSION,
+            "status": "failed",
+            "kept_leads": 0,
+            "rejected_leads": 0,
+            "errors": [str(exc)],
+            "warnings": [],
+        }
+    json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write("\n")
+    if result.get("status") != "completed":
+        raise SystemExit(1)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Deterministic CSV utilities for XAUUSD X/Twitter lead enrichment.",
@@ -548,6 +808,13 @@ def build_parser() -> argparse.ArgumentParser:
     write.add_argument("--input", type=Path, default=Path("enriched_leads.normalized.json"))
     write.add_argument("--output", type=Path, default=Path("enriched_leads.csv"))
     write.set_defaults(func=cmd_write)
+
+    validate = subparsers.add_parser(
+        "validate",
+        help="Validate Hermes-produced enriched JSON without writing any files.",
+    )
+    validate.add_argument("--input", type=Path, default=Path("enriched_leads.normalized.json"))
+    validate.set_defaults(func=cmd_validate)
     return parser
 
 

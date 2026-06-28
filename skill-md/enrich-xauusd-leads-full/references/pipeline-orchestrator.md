@@ -2,7 +2,7 @@
 
 `scripts/run_pipeline.py` is the project-owned Phase 3E orchestration wrapper for the XAUUSD lead pipeline.
 
-The orchestrator runs the complete pipeline from `raw_leads.csv` to Google Sheets sync and a machine-readable run report. It captures subprocess output and emits a single JSON summary to stdout.
+The orchestrator runs the complete pipeline from `raw_leads.csv` to Google Sheets sync, a machine-readable run report, and optional GitHub artifact sync. It captures subprocess output and emits a single JSON summary to stdout.
 
 It does not implement lead scoring, Recent X lookup, Google Sheets sync, or report metrics itself. It calls the existing project-owned helpers and Hermes.
 
@@ -18,6 +18,9 @@ normalize
 Hermes enrichment
   |
   v
+validate enriched JSON
+  |
+  v
 write enriched_leads.csv
   |
   v
@@ -25,6 +28,9 @@ Google Sheets sync
   |
   v
 run report
+  |
+  v
+GitHub sync
   |
   v
 single JSON summary
@@ -45,21 +51,34 @@ Steps:
    - Fatal if it fails.
    - Recent X failures are handled inside Hermes/SKILL instructions and should not stop the pipeline.
 
-3. `write_csv`
+3. `validate_enriched_json`
+   - Runs `scripts/enrich_xauusd_leads.py validate`.
+   - Validates `enriched_leads.normalized.json` before CSV writing.
+   - Checks that every kept lead with `score_fit >= 7` has `name`, `username`, numeric `score_fit`, `first_line`, and `hook`.
+   - Emits JSON only and writes no files.
+   - Fatal if it fails.
+
+4. `write_csv`
    - Runs `scripts/enrich_xauusd_leads.py write`.
    - Produces `enriched_leads.csv`.
    - Fatal if it fails.
 
-4. `google_sheet`
+5. `google_sheet`
    - Runs `scripts/sync_google_sheet.py`.
    - Writes captured helper JSON to `google_sheet_sync.json`.
    - Non-fatal if it fails.
 
-5. `run_report`
+6. `run_report`
    - Runs `scripts/generate_run_report.py`.
    - Produces `run_report.json`.
    - Always attempted.
    - Non-fatal in orchestrator summary, because the orchestrator should still return machine-readable failure context.
+
+7. `github_sync`
+   - Runs `scripts/sync_github.py` after `run_report`, because the current run report must exist before GitHub artifact sync.
+   - Copies `enriched_leads.csv`, `run_report.json`, and `google_sheet_sync.json` into the configured Git repo output directory.
+   - Non-fatal if it fails.
+   - Can be disabled with `--skip-github-sync`.
 
 ## Failure Policy
 
@@ -67,6 +86,7 @@ Fatal steps:
 
 - normalize
 - hermes
+- validate_enriched_json
 - write_csv
 
 If a fatal step fails, the orchestrator stops downstream enrichment/sync steps and still attempts `run_report`.
@@ -75,8 +95,9 @@ Non-fatal steps:
 
 - google_sheet
 - run_report
+- github_sync
 
-Google Sheets sync failure does not fail the core enrichment pipeline. The final orchestrator status becomes `completed_with_warnings` when core steps complete but a non-fatal step fails.
+Google Sheets sync, run report, and GitHub sync failures do not fail the core enrichment pipeline. The final orchestrator status becomes `completed_with_warnings` when core steps complete but a non-fatal step fails.
 
 If a fatal step fails, final status is `failed`.
 
@@ -95,6 +116,7 @@ Manual retry guidance:
 - If `write_csv` fails, fix `enriched_leads.normalized.json` and rerun from the orchestrator or run the writer manually.
 - If `google_sheet` fails, fix credentials/sheet permissions and rerun Sheets sync only or rerun the orchestrator.
 - If `run_report` fails, fix missing artifacts and run `generate_run_report.py` manually.
+- If `github_sync` fails, fix Git repo configuration, credentials, remote access, or artifact paths, then rerun `sync_github.py` manually or rerun the orchestrator.
 
 Do not retry Google Sheets blindly until duplicate detection is confirmed active. `sync_google_sheet.py` uses `Username X` duplicate detection for append idempotency.
 
@@ -107,6 +129,8 @@ HERMES_HOME=/opt/hermes-ads/hermes-home \
 GOOGLE_SHEET_ID="<sheet-id>" \
 GOOGLE_SERVICE_ACCOUNT_FILE="/secure/path/service-account.json" \
 GOOGLE_SHEET_NAME="XAUUSD_Leads" \
+GITHUB_SYNC_REPO_DIR="/home/hermesads/xauusd-leads-history" \
+GITHUB_SYNC_OUTPUT_DIR="xauusd-leads" \
 python3 /opt/hermes-ads/hermes-home/skills/lead-gen/enrich-xauusd-leads-full/scripts/run_pipeline.py \
   --work-dir /tmp/xauusd-real \
   --raw-csv /tmp/xauusd-real/raw_leads.csv \
@@ -114,12 +138,17 @@ python3 /opt/hermes-ads/hermes-home/skills/lead-gen/enrich-xauusd-leads-full/scr
   --enriched-json /tmp/xauusd-real/enriched_leads.normalized.json \
   --csv /tmp/xauusd-real/enriched_leads.csv \
   --google-sheet-json /tmp/xauusd-real/google_sheet_sync.json \
-  --run-report /tmp/xauusd-real/run_report.json
+  --run-report /tmp/xauusd-real/run_report.json \
+  --github-sync-json /tmp/xauusd-real/github_sync.json
 ```
+
+Use `--skip-github-sync` to disable the GitHub step for local tests or environments without a configured Git repo.
 
 ## Output Summary
 
 The orchestrator emits JSON only:
+
+Every step object includes `started_at`, `finished_at`, and `duration_seconds` for bottleneck analysis while preserving the existing `name`, `status`, `fatal`, `returncode`, and `command` fields.
 
 ```json
 {
@@ -132,10 +161,17 @@ The orchestrator emits JSON only:
   "steps": [
     {
       "name": "normalize",
-      "status": "completed"
+      "status": "completed",
+      "started_at": "2026-06-27T12:00:00Z",
+      "finished_at": "2026-06-27T12:00:02Z",
+      "duration_seconds": 2
     },
     {
       "name": "hermes",
+      "status": "completed"
+    },
+    {
+      "name": "validate_enriched_json",
       "status": "completed"
     },
     {
@@ -149,6 +185,10 @@ The orchestrator emits JSON only:
     {
       "name": "run_report",
       "status": "completed"
+    },
+    {
+      "name": "github_sync",
+      "status": "completed"
     }
   ],
   "outputs": {
@@ -156,7 +196,8 @@ The orchestrator emits JSON only:
     "enriched_json": "/tmp/xauusd-real/enriched_leads.normalized.json",
     "csv": "/tmp/xauusd-real/enriched_leads.csv",
     "google_sheet_sync": "/tmp/xauusd-real/google_sheet_sync.json",
-    "run_report": "/tmp/xauusd-real/run_report.json"
+    "run_report": "/tmp/xauusd-real/run_report.json",
+    "github_sync": "/tmp/xauusd-real/github_sync.json"
   }
 }
 ```
@@ -177,10 +218,12 @@ The orchestrator requires a real Hermes runtime for an end-to-end test. For loca
 python3 -m py_compile skill-md/enrich-xauusd-leads-full/scripts/run_pipeline.py
 python3 -m py_compile skill-md/enrich-xauusd-leads-full/scripts/generate_run_report.py
 python3 -m py_compile skill-md/enrich-xauusd-leads-full/scripts/sync_google_sheet.py
+python3 -m py_compile skill-md/enrich-xauusd-leads-full/scripts/sync_github.py
 ```
 
 ## Notes
 
 - No Telegram notification is implemented in Phase 3E.
 - No Google Sheets replace/upsert mode is implemented.
+- GitHub sync is optional and non-fatal.
 - The orchestrator does not modify production helper behavior.
