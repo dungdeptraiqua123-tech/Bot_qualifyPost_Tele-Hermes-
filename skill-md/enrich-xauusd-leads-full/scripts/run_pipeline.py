@@ -17,6 +17,7 @@ DEFAULT_HERMES_BIN = "/opt/hermes-ads/venvs/hermes/bin/hermes"
 DEFAULT_HERMES_HOME = "/opt/hermes-ads/hermes-home"
 DEFAULT_SKILL = "enrich-xauusd-leads-full"
 DEFAULT_PIPELINE_VERSION = "phase-3e"
+DEFAULT_APIFY_MAX_ITEMS = 800
 
 
 class AtomicTextWriter:
@@ -125,6 +126,10 @@ def skipped_step(name: str, *, fatal: bool = False, reason: str = "") -> dict[st
     return step
 
 
+def has_fatal_failure(steps: list[dict[str, Any]]) -> bool:
+    return any(step["status"] == "failed" and step.get("fatal") for step in steps)
+
+
 def run_command(
     *,
     name: str,
@@ -223,7 +228,7 @@ def build_summary(
     run_report_payload: Optional[dict[str, Any]],
     github_payload: Optional[dict[str, Any]],
 ) -> dict[str, Any]:
-    fatal_failed = any(step["status"] == "failed" and step.get("fatal") for step in steps)
+    fatal_failed = has_fatal_failure(steps)
     nonfatal_failed = any(step["status"] == "failed" and not step.get("fatal") for step in steps)
     if fatal_failed:
         status = "failed"
@@ -292,6 +297,30 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
     google_payload: Optional[dict[str, Any]] = None
     run_report_payload: Optional[dict[str, Any]] = None
     github_payload: Optional[dict[str, Any]] = None
+
+    if args.fetch_apify and not args.skip_apify_fetch:
+        fetch_cmd = [
+            sys.executable,
+            str(scripts / "fetch_apify_raw_leads.py"),
+            "--country-group",
+            args.country_group,
+            "--output-csv",
+            str(args.raw_csv),
+            "--max-items",
+            str(args.apify_max_items),
+        ]
+        if args.apify_actor_id:
+            fetch_cmd.extend(["--actor-id", args.apify_actor_id])
+        step, completed = run_command(
+            name="fetch_apify",
+            command=fetch_cmd,
+            cwd=work_dir,
+            fatal=True,
+            timeout=args.apify_timeout,
+        )
+        steps.append(step)
+        if completed.returncode != 0:
+            return finish_with_report(args, started_at, steps, google_payload, run_report_payload, github_payload, work_dir)
 
     normalize_cmd = [
         sys.executable,
@@ -455,7 +484,24 @@ def finish_with_report(
         step.setdefault("error", safe_tail(completed.stderr or completed.stdout))
     steps.append(step)
 
-    if args.skip_github_sync:
+    if has_fatal_failure(steps):
+        github_payload = {
+            "schema_version": "github-sync/v1",
+            "status": "skipped",
+            "files_copied": [],
+            "commit_created": False,
+            "commit_sha": "",
+            "pushed": False,
+            "warnings": ["github_sync_skipped_after_fatal_step"],
+        }
+        step = skipped_step("github_sync", fatal=False, reason="fatal_step_failed")
+        try:
+            write_json(args.github_sync_json, github_payload)
+        except OSError as exc:
+            step["status"] = "failed"
+            step["error"] = f"github_sync_json_write_failed: {exc}"
+        steps.append(step)
+    elif args.skip_github_sync:
         github_payload = {
             "schema_version": "github-sync/v1",
             "status": "skipped",
@@ -544,6 +590,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--github-repo-dir", default=os.environ.get("GITHUB_SYNC_REPO_DIR", ""))
     parser.add_argument("--github-output-dir", default=os.environ.get("GITHUB_SYNC_OUTPUT_DIR", ""))
     parser.add_argument("--skip-github-sync", action="store_true")
+    parser.add_argument("--fetch-apify", action="store_true")
+    parser.add_argument("--skip-apify-fetch", action="store_true")
+    parser.add_argument("--country-group", choices=["english", "europe", "middle-east", "all"], default="english")
+    parser.add_argument("--apify-max-items", type=int, default=DEFAULT_APIFY_MAX_ITEMS)
+    parser.add_argument("--apify-actor-id", default=os.environ.get("APIFY_ACTOR_ID", ""))
+    parser.add_argument("--apify-timeout", type=int, default=900)
     parser.add_argument("--hermes-bin", default=os.environ.get("HERMES_BIN", DEFAULT_HERMES_BIN))
     parser.add_argument("--hermes-home", default=os.environ.get("HERMES_HOME", DEFAULT_HERMES_HOME))
     parser.add_argument("--skill", default=DEFAULT_SKILL)
