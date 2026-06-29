@@ -7,6 +7,8 @@ Muc tieu buoc 1:
 - Chay bot Telegram bang long polling tren may local.
 - Doc bai moi tu Telegram channel qua update `channel_post`.
 - Doc bai channel bi sua qua `edited_channel_post`.
+- Doc tin nhan moi trong group/supergroup neu nguoi gui la admin.
+- Ho tro admin group thuong va admin dang an danh.
 - Log object bai dang ra terminal.
 - Quan ly mapping source channel -> target channels bang command trong bot.
 - Goi Hermes Review Agent de danh gia PASS/FAIL khi post co mapping target.
@@ -45,8 +47,9 @@ ADMIN_USER_IDS=5323156921
 ```
 
 Nguoi khac van co the tim thay bot neu biet username, nhung khi nhan tin/lenh
-cho bot se bi tu choi. Channel post duoc xu ly rieng theo `ALLOWED_CHANNEL_IDS`
-va mapping.
+cho bot se bi tu choi. Channel post va group admin post duoc xu ly rieng theo
+`ALLOWED_CHANNEL_IDS` va mapping. Thanh vien thuong trong group se bi bo qua im
+lang.
 
 ## Chay bot
 
@@ -132,6 +135,13 @@ Vi du:
 
 Mapping duoc luu tai `config/mappings.json`. Day la cau hinh he thong, khong phai lich su bai viet.
 
+`source_channel_id` co the la ID cua channel, group hoac supergroup. Vi du:
+
+```text
+/allow_add -1001111111111
+/map_add -1001111111111 -1002222222222
+```
+
 Allowed source channels duoc luu tai `config/allowed_channels.json`. Neu file nay
 rong hoac khong co channel nao, bot se chap nhan moi channel ma no doc duoc. Sau
 khi bot da chay, dung `/allow_add` thay vi sua `.env`.
@@ -143,6 +153,17 @@ khi bot da chay, dung `/allow_add` thay vi sua `.env`.
 - Bot phai la admin cua channel dich va co quyen dang bai de publish.
 - Bot chi nhan bai moi sau khi duoc them vao channel.
 - Neu bot tung dung webhook, app se tu goi `deleteWebhook` khi khoi dong.
+
+## Dieu kien de doc group
+
+- Bot phai duoc them vao group/supergroup va duoc cap quyen admin.
+- Them group ID bang `/allow_add <group_id>`.
+- Tao mapping bang `/map_add <group_id> <target_channel_id>`.
+- Tin nhan cua `administrator` va `creator` se vao pipeline nhu channel post.
+- Tin nhan cua thanh vien thuong va bot khac se bi bo qua im lang.
+- Admin an danh duoc chap nhan khi Telegram gui `sender_chat` chinh la group.
+- Bai dang duoi danh nghia mot channel khac trong group se bi bo qua vi bot khong
+  the xac minh an toan admin ca nhan da gui bai do.
 
 ## Luu y
 

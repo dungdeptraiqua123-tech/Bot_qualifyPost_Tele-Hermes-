@@ -17,6 +17,7 @@ from app.handlers import (
     handle_channel_post,
     handle_chat_check,
     handle_error,
+    handle_group_post,
     handle_map_add,
     handle_map_list,
     handle_map_remove,
@@ -115,7 +116,14 @@ def build_application(settings: Settings) -> Application:
     application.add_handler(
         MessageHandler(filters.UpdateType.EDITED_CHANNEL_POST, handle_channel_post)
     )
-    application.add_handler(MessageHandler(filters.ALL, handle_user_message))
+    group_post_filter = filters.ChatType.GROUPS & ~filters.COMMAND
+    application.add_handler(
+        MessageHandler(filters.UpdateType.MESSAGE & group_post_filter, handle_group_post)
+    )
+    application.add_handler(
+        MessageHandler(filters.UpdateType.EDITED_MESSAGE & group_post_filter, handle_group_post)
+    )
+    application.add_handler(MessageHandler(filters.ChatType.PRIVATE, handle_user_message))
     application.add_error_handler(handle_error)
     return application
 
@@ -125,7 +133,7 @@ def main() -> None:
     configure_logging(settings.log_level)
 
     logging.getLogger(__name__).info(
-        "Starting %s. Listening for channel_post updates.",
+        "Starting %s. Listening for channel posts and admin group messages.",
         settings.telegram_bot_username,
     )
     if settings.review_enabled:
@@ -148,7 +156,12 @@ def main() -> None:
     application.run_polling(
         timeout=settings.telegram_polling_timeout_seconds,
         bootstrap_retries=-1,
-        allowed_updates=["message", "channel_post", "edited_channel_post"],
+        allowed_updates=[
+            "message",
+            "edited_message",
+            "channel_post",
+            "edited_channel_post",
+        ],
         drop_pending_updates=settings.drop_pending_updates,
     )
 

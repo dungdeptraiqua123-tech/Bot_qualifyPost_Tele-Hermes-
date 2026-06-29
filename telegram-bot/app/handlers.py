@@ -6,6 +6,7 @@ import time
 
 from telegram import Message
 from telegram import Update
+from telegram.constants import ChatMemberStatus
 from telegram.error import TelegramError
 from telegram.ext import Application
 from telegram.ext import ContextTypes
@@ -330,6 +331,94 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         "/allow_list\n"
         "/chat_check <channel_id>"
     )
+
+
+async def handle_group_post(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.message or update.edited_message
+    if not message:
+        return
+
+    update_type = "edited_group_message" if update.edited_message else "group_message"
+
+    if not _allowed_channel_store(context).is_allowed(message.chat_id):
+        logger.warning(
+            "Ignored group post from non-allowed source: chat_id=%s title=%s message_id=%s",
+            message.chat_id,
+            message.chat.title,
+            message.message_id,
+        )
+        return
+
+    if not await _is_group_admin_message(message, context):
+        logger.info(
+            "[GROUP_POST_IGNORED] reason=sender_not_admin chat_id=%s title=%r "
+            "message_id=%s sender_user_id=%s sender_chat_id=%s",
+            message.chat_id,
+            message.chat.title,
+            message.message_id,
+            message.from_user.id if message.from_user else None,
+            message.sender_chat.id if message.sender_chat else None,
+        )
+        return
+
+    logger.info(
+        "[GROUP_ADMIN_POST] status=accepted chat_id=%s title=%r message_id=%s "
+        "sender_user_id=%s anonymous_admin=%s",
+        message.chat_id,
+        message.chat.title,
+        message.message_id,
+        message.from_user.id if message.from_user else None,
+        bool(message.sender_chat and message.sender_chat.id == message.chat_id),
+    )
+
+    if message.media_group_id:
+        await _buffer_media_group_message(
+            message=message,
+            update_type=update_type,
+            is_edited=bool(update.edited_message),
+            context=context,
+        )
+        return
+
+    await _process_messages(
+        application=context.application,
+        messages=[message],
+        update_type=update_type,
+        is_edited=bool(update.edited_message),
+    )
+
+
+async def _is_group_admin_message(
+    message: Message,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> bool:
+    sender_chat = message.sender_chat
+    if sender_chat is not None:
+        # Anonymous admins send as the group itself. Posts sent as another
+        # channel cannot be tied safely to an individual group administrator.
+        return sender_chat.id == message.chat_id
+
+    sender = message.from_user
+    if sender is None or sender.is_bot:
+        return False
+
+    try:
+        member = await context.bot.get_chat_member(message.chat_id, sender.id)
+    except TelegramError as exc:
+        logger.warning(
+            "Could not verify group sender permissions: chat_id=%s user_id=%s "
+            "message_id=%s error=%r",
+            message.chat_id,
+            sender.id,
+            message.message_id,
+            str(exc),
+        )
+        return False
+
+    return member.status in {
+        ChatMemberStatus.ADMINISTRATOR,
+        ChatMemberStatus.OWNER,
+    }
 
 
 async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
