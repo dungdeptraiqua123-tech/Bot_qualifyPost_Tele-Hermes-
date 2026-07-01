@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, Mapping
 
 from telegram import Message
 
@@ -113,6 +113,43 @@ class PostObject:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "PostObject":
+        raw_media_items = data.get("media_items", [])
+        media_items = [
+            MediaItem(
+                media_type=str(item["media_type"]),
+                file_id=str(item["file_id"]),
+            )
+            for item in raw_media_items
+            if isinstance(item, Mapping)
+        ]
+        return cls(
+            source_channel_id=int(data["source_channel_id"]),
+            source_channel_title=(
+                str(data["source_channel_title"])
+                if data.get("source_channel_title") is not None
+                else None
+            ),
+            message_id=int(data["message_id"]),
+            text=str(data.get("text", "")),
+            media_type=str(data.get("media_type", "text")),
+            media_file_id=(
+                str(data["media_file_id"])
+                if data.get("media_file_id") is not None
+                else None
+            ),
+            media_group_id=(
+                str(data["media_group_id"])
+                if data.get("media_group_id") is not None
+                else None
+            ),
+            is_edited=bool(data.get("is_edited", False)),
+            target_channel_ids=[int(item) for item in data.get("target_channel_ids", [])],
+            media_file_ids=[str(item) for item in data.get("media_file_ids", [])],
+            media_items=media_items,
+        )
 
     @property
     def has_media(self) -> bool:

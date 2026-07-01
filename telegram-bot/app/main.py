@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 
 from telegram.request import HTTPXRequest
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
@@ -24,9 +25,11 @@ from app.handlers import (
     handle_ping,
     handle_start,
     handle_user_message,
+    run_post_queue_worker,
 )
 from app.hermes_client import HermesClient
 from app.mapping_store import MappingStore
+from app.post_queue import PersistentPostQueue
 from app.publisher import TelegramPublisher
 
 
@@ -46,6 +49,29 @@ async def post_init(application: Application) -> None:
     logging.getLogger(__name__).info(
         "Webhook deleted. drop_pending_updates=%s", settings.drop_pending_updates
     )
+    queue: PersistentPostQueue = application.bot_data["post_queue"]
+    recovered, depth = await queue.initialize(
+        collecting_recovery_delay_seconds=settings.telegram_media_group_flush_delay_seconds,
+    )
+    logging.getLogger(__name__).info(
+        "Post queue ready. path=%s recovered=%s depth=%s",
+        queue.path,
+        recovered,
+        depth,
+    )
+    application.bot_data["post_queue_worker_task"] = asyncio.create_task(
+        run_post_queue_worker(application),
+        name="post-queue-worker",
+    )
+
+
+async def post_stop(application: Application) -> None:
+    task: asyncio.Task[None] | None = application.bot_data.get("post_queue_worker_task")
+    if task is None:
+        return
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
 
 
 def build_application(settings: Settings) -> Application:
@@ -68,12 +94,16 @@ def build_application(settings: Settings) -> Application:
         .request(request)
         .get_updates_request(get_updates_request)
         .post_init(post_init)
+        .post_stop(post_stop)
         .build()
     )
     application.bot_data["settings"] = settings
-    application.bot_data["seen_posts"] = set()
     application.bot_data["media_group_buffer"] = {}
-    application.bot_data["pipeline_lock"] = asyncio.Lock()
+    application.bot_data["post_queue"] = PersistentPostQueue(
+        settings.post_queue_path,
+        max_attempts=settings.post_queue_max_attempts,
+        retry_delay_seconds=settings.post_queue_retry_delay_seconds,
+    )
     application.bot_data["mapping_store"] = MappingStore(settings.mappings_path)
     application.bot_data["allowed_channel_store"] = AllowedChannelStore(
         settings.allowed_channels_path,

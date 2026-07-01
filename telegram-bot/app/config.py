@@ -58,6 +58,10 @@ class Settings:
     log_level: str
     mappings_path: Path
     allowed_channels_path: Path
+    post_queue_path: Path
+    post_queue_max_attempts: int
+    post_queue_retry_delay_seconds: float
+    post_queue_poll_interval_seconds: float
     telegram_request_timeout_seconds: float
     telegram_polling_timeout_seconds: int
     telegram_polling_read_timeout_seconds: float
@@ -101,6 +105,28 @@ class Settings:
         media_group_flush_delay = _parse_float(
             os.getenv("TELEGRAM_MEDIA_GROUP_FLUSH_DELAY_SECONDS", ""),
             default=2.0,
+        )
+        post_queue_path = _parse_path(
+            os.getenv("POST_QUEUE_PATH", ""),
+            default=PROJECT_DIR / "config" / "post_queue.json",
+        )
+        post_queue_max_attempts = max(
+            1,
+            int(_parse_float(os.getenv("POST_QUEUE_MAX_ATTEMPTS", ""), default=3.0)),
+        )
+        post_queue_retry_delay = max(
+            0.0,
+            _parse_float(
+                os.getenv("POST_QUEUE_RETRY_DELAY_SECONDS", ""),
+                default=10.0,
+            ),
+        )
+        post_queue_poll_interval = max(
+            0.1,
+            _parse_float(
+                os.getenv("POST_QUEUE_POLL_INTERVAL_SECONDS", ""),
+                default=1.0,
+            ),
         )
         review_enabled = _parse_bool(os.getenv("REVIEW_ENABLED", "true"), default=True)
         review_skill_path = _parse_path(
@@ -151,6 +177,10 @@ class Settings:
             log_level=log_level,
             mappings_path=PROJECT_DIR / "config" / "mappings.json",
             allowed_channels_path=PROJECT_DIR / "config" / "allowed_channels.json",
+            post_queue_path=post_queue_path,
+            post_queue_max_attempts=post_queue_max_attempts,
+            post_queue_retry_delay_seconds=post_queue_retry_delay,
+            post_queue_poll_interval_seconds=post_queue_poll_interval,
             telegram_request_timeout_seconds=request_timeout,
             telegram_polling_timeout_seconds=polling_timeout,
             telegram_polling_read_timeout_seconds=polling_read_timeout,

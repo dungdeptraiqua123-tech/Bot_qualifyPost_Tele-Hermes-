@@ -17,6 +17,7 @@ from app.allowed_channel_store import AllowedChannelStore
 from app.config import Settings
 from app.mapping_store import MappingStore
 from app.models import PostObject
+from app.post_queue import PersistentPostQueue, QueueJob
 from app.publisher import TelegramPublisher
 
 
@@ -32,14 +33,6 @@ MediaGroupKey = tuple[int, str, str]
 
 def _settings_from_application(application: Application) -> Settings:
     return application.bot_data["settings"]
-
-
-def _seen_posts_from_application(application: Application) -> set[tuple[int, str, str]]:
-    return application.bot_data["seen_posts"]
-
-
-def _seen_posts(context: ContextTypes.DEFAULT_TYPE) -> set[tuple[int, str, str]]:
-    return _seen_posts_from_application(context.application)
 
 
 def _mapping_store(context: ContextTypes.DEFAULT_TYPE) -> MappingStore:
@@ -78,8 +71,8 @@ def _media_group_buffer(application: Application) -> dict[MediaGroupKey, dict[st
     return application.bot_data["media_group_buffer"]
 
 
-def _pipeline_lock(application: Application) -> asyncio.Lock:
-    return application.bot_data["pipeline_lock"]
+def _post_queue_from_application(application: Application) -> PersistentPostQueue:
+    return application.bot_data["post_queue"]
 
 
 def _is_admin(settings: Settings, update: Update) -> bool:
@@ -481,6 +474,31 @@ async def _buffer_media_group_message(
     state["last_seen"] = time.monotonic()
     state["is_edited"] = bool(state.get("is_edited")) or is_edited
 
+    target_channel_ids = _mapping_store_from_application(context.application).get_targets(
+        message.chat_id
+    )
+    if target_channel_ids:
+        collecting_post = PostObject.from_messages(
+            messages,
+            is_edited=bool(state["is_edited"]),
+            target_channel_ids=target_channel_ids,
+        )
+        queue_result = await _post_queue_from_application(context.application).enqueue(
+            collecting_post,
+            update_type=update_type,
+            collecting=True,
+        )
+        logger.info(
+            "[QUEUE_COLLECTING] job_id=%s action=%s queue_depth=%s "
+            "source_channel_id=%s media_group_id=%s media_count=%s",
+            queue_result.job_id,
+            queue_result.action,
+            queue_result.queue_depth,
+            collecting_post.source_channel_id,
+            collecting_post.media_group_id,
+            collecting_post.media_count,
+        )
+
     logger.info(
         "[MEDIA_GROUP_BUFFERED] source_channel_id=%s media_group_id=%s "
         "message_id=%s count=%s has_text=%s",
@@ -531,6 +549,7 @@ async def _flush_media_group_after_idle(
         messages=messages,
         update_type=key[2],
         is_edited=bool(state.get("is_edited")),
+        finalize_collecting=True,
     )
 
 
@@ -540,22 +559,7 @@ async def _process_messages(
     messages: list[Message],
     update_type: str,
     is_edited: bool,
-) -> None:
-    async with _pipeline_lock(application):
-        await _process_messages_unlocked(
-            application=application,
-            messages=messages,
-            update_type=update_type,
-            is_edited=is_edited,
-        )
-
-
-async def _process_messages_unlocked(
-    *,
-    application: Application,
-    messages: list[Message],
-    update_type: str,
-    is_edited: bool,
+    finalize_collecting: bool = False,
 ) -> None:
     first_message = sorted(messages, key=lambda item: item.message_id)[0]
     target_channel_ids = _mapping_store_from_application(application).get_targets(
@@ -566,15 +570,19 @@ async def _process_messages_unlocked(
         is_edited=is_edited,
         target_channel_ids=target_channel_ids,
     )
-    post_identity = post.media_group_id or str(post.message_id)
-    key = (post.source_channel_id, str(post_identity), update_type)
-    if key in _seen_posts_from_application(application):
-        status = "duplicate"
-    else:
-        _seen_posts_from_application(application).add(key)
-        status = "received"
-
     pipeline_id = f"{post.source_channel_id}:{post.media_group_id or post.message_id}:{update_type}"
+    queue_result = None
+    if post.target_channel_ids:
+        queue = _post_queue_from_application(application)
+        if finalize_collecting:
+            queue_result = await queue.finalize_collecting(
+                post,
+                update_type=update_type,
+            )
+        else:
+            queue_result = await queue.enqueue(post, update_type=update_type)
+    status = "duplicate" if queue_result and queue_result.is_duplicate else "received"
+
     preview = post.text.replace("\n", " ")[:160]
     media_file_preview = (post.media_file_id or "")[:32]
     logger.info(
@@ -618,6 +626,131 @@ async def _process_messages_unlocked(
         )
         return
 
+    if queue_result is None:
+        raise RuntimeError("Post queue did not return an enqueue result.")
+
+    logger.info(
+        "[QUEUE_ENQUEUED] pipeline_id=%s job_id=%s action=%s queue_depth=%s "
+        "source_channel_id=%s message_id=%s",
+        pipeline_id,
+        queue_result.job_id,
+        queue_result.action,
+        queue_result.queue_depth,
+        post.source_channel_id,
+        post.message_id,
+    )
+
+
+async def run_post_queue_worker(application: Application) -> None:
+    queue = _post_queue_from_application(application)
+    settings = _settings_from_application(application)
+    logger.info(
+        "[QUEUE_WORKER_STARTED] path=%s max_attempts=%s retry_delay_seconds=%s",
+        queue.path,
+        queue.max_attempts,
+        queue.retry_delay_seconds,
+    )
+
+    while True:
+        try:
+            job = await queue.claim_next()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("[QUEUE_READ_ERROR] Could not claim the next queued post.")
+            await asyncio.sleep(settings.post_queue_poll_interval_seconds)
+            continue
+
+        if job is None:
+            await queue.wait_for_change(settings.post_queue_poll_interval_seconds)
+            continue
+
+        post = job.post
+        pipeline_id = (
+            f"{post.source_channel_id}:{post.media_group_id or post.message_id}:"
+            f"{job.update_type}"
+        )
+        logger.info(
+            "[QUEUE_PROCESSING] job_id=%s pipeline_id=%s attempt=%s received_at=%s "
+            "published_targets=%s",
+            job.job_id,
+            pipeline_id,
+            job.attempts,
+            job.received_at,
+            job.published_target_ids,
+        )
+
+        try:
+            if set(job.published_target_ids) >= set(post.target_channel_ids):
+                logger.info(
+                    "[PIPELINE_SKIPPED] pipeline_id=%s reason=all_targets_already_published",
+                    pipeline_id,
+                )
+            else:
+                await _process_queued_job(
+                    application=application,
+                    queue=queue,
+                    job=job,
+                    pipeline_id=pipeline_id,
+                )
+            remaining = await queue.complete(job.job_id)
+        except asyncio.CancelledError:
+            logger.info(
+                "[QUEUE_WORKER_STOPPED] job_id=%s pipeline_id=%s status=interrupted",
+                job.job_id,
+                pipeline_id,
+            )
+            raise
+        except Exception as exc:
+            try:
+                failure = await queue.fail(job.job_id, str(exc))
+            except Exception:
+                logger.exception(
+                    "[QUEUE_STATE_ERROR] job_id=%s pipeline_id=%s original_error=%r",
+                    job.job_id,
+                    pipeline_id,
+                    str(exc),
+                )
+                continue
+
+            if failure.status == "pending":
+                logger.warning(
+                    "[QUEUE_RETRY] job_id=%s pipeline_id=%s attempt=%s max_attempts=%s "
+                    "retry_after_seconds=%s error=%r",
+                    job.job_id,
+                    pipeline_id,
+                    failure.attempts,
+                    queue.max_attempts,
+                    queue.retry_delay_seconds,
+                    str(exc),
+                )
+            else:
+                logger.error(
+                    "[QUEUE_FAILED] job_id=%s pipeline_id=%s attempts=%s error=%r",
+                    job.job_id,
+                    pipeline_id,
+                    failure.attempts,
+                    str(exc),
+                )
+            continue
+
+        logger.info(
+            "[QUEUE_COMPLETED] job_id=%s pipeline_id=%s remaining=%s",
+            job.job_id,
+            pipeline_id,
+            remaining,
+        )
+
+
+async def _process_queued_job(
+    *,
+    application: Application,
+    queue: PersistentPostQueue,
+    job: QueueJob,
+    pipeline_id: str,
+) -> None:
+    post = job.post
+
     review_agent = _review_agent_from_application(application)
     if review_agent is None:
         logger.info(
@@ -637,7 +770,7 @@ async def _process_messages_unlocked(
             post.source_channel_id,
             post.message_id,
         )
-        return
+        raise
 
     raw_preview = review_result.raw_text.replace("\n", " ")[:240]
     logger.info(
@@ -684,7 +817,7 @@ async def _process_messages_unlocked(
             post.message_id,
             post.target_channel_count,
         )
-        return
+        raise
 
     logger.info(
         "[REWRITE_RESULT] pipeline_id=%s source_channel_id=%s message_id=%s expected_count=%s "
@@ -719,7 +852,17 @@ async def _process_messages_unlocked(
         )
         return
 
+    publish_errors: list[str] = []
+    already_published = set(job.published_target_ids)
     for item in rewrite_result.posts:
+        if item.target_channel_id in already_published:
+            logger.info(
+                "[PUBLISH_SKIPPED] pipeline_id=%s reason=target_already_published "
+                "target_channel_id=%s",
+                pipeline_id,
+                item.target_channel_id,
+            )
+            continue
         try:
             publish_result = await publisher.publish(post=post, rewrite_post=item)
         except TelegramError as exc:
@@ -739,8 +882,9 @@ async def _process_messages_unlocked(
                 str(exc),
                 hint,
             )
+            publish_errors.append(f"{item.target_channel_id}: {exc}")
             continue
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "[PUBLISH_ERROR] pipeline_id=%s source_channel_id=%s message_id=%s target_channel_id=%s "
                 "media_count=%s",
@@ -750,7 +894,10 @@ async def _process_messages_unlocked(
                 item.target_channel_id,
                 post.media_count,
             )
+            publish_errors.append(f"{item.target_channel_id}: {exc}")
             continue
+
+        await queue.mark_target_published(job.job_id, item.target_channel_id)
 
         logger.info(
             "[PUBLISH_RESULT] pipeline_id=%s source_channel_id=%s message_id=%s target_channel_id=%s "
@@ -762,6 +909,9 @@ async def _process_messages_unlocked(
             publish_result.message_ids,
             publish_result.media_count,
         )
+
+    if publish_errors:
+        raise RuntimeError("Publish failed for target(s): " + "; ".join(publish_errors))
 
 
 async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:

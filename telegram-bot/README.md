@@ -14,6 +14,7 @@ Muc tieu buoc 1:
 - Goi Hermes Review Agent de danh gia PASS/FAIL khi post co mapping target.
 - Neu PASS, goi Hermes Rewrite Agent de tao dung 1 bai moi cho moi channel dich.
 - Publish bai rewrite kem media goc sang dung channel dich.
+- Luu bai vao hang cho JSON ben vung va xu ly pipeline theo thu tu FIFO.
 
 ## Cai dat local
 
@@ -65,7 +66,26 @@ TELEGRAM_REQUEST_TIMEOUT_SECONDS=30
 TELEGRAM_POLLING_TIMEOUT_SECONDS=30
 TELEGRAM_POLLING_READ_TIMEOUT_SECONDS=45
 TELEGRAM_MEDIA_GROUP_FLUSH_DELAY_SECONDS=2
+POST_QUEUE_PATH=config/post_queue.json
+POST_QUEUE_MAX_ATTEMPTS=3
+POST_QUEUE_RETRY_DELAY_SECONDS=10
+POST_QUEUE_POLL_INTERVAL_SECONDS=1
 ```
+
+## Hang cho bai viet
+
+Ngay khi bot nhan va chuan hoa bai viet, snapshot text, Telegram media `file_id`,
+source va target IDs duoc luu vao `POST_QUEUE_PATH`. Mot worker duy nhat xu ly
+review -> rewrite -> publish theo thu tu nhan. Bai thanh cong duoc xoa khoi file.
+
+Neu review, rewrite hoac publish loi, job duoc thu lai toi da
+`POST_QUEUE_MAX_ATTEMPTS` lan. Target da publish thanh cong duoc ghi nhan de lan
+retry khong dang trung. Job het so lan retry se giu trang thai `failed` trong
+file de kiem tra, nhung khong chan cac job phia sau.
+
+Album duoc tao thanh mot job `collecting` ngay tu media dau tien. Worker doi den
+khi album duoc gom xong roi moi dua ca album vao pipeline. Khi bot restart, job
+`processing` hoac album dang `collecting` se duoc dua ve `pending`.
 
 ## Hermes Review Agent
 
@@ -167,5 +187,6 @@ khi bot da chay, dung `/allow_add` thay vi sua `.env`.
 
 ## Luu y
 
-Bot hien khong luu lich su bai viet xuong dia. Trong mot phien chay, bot chi
-giu mot bo nho tam de tranh log trung cung mot `source_channel_id + message_id + update_type`.
+Hang cho chi la du lieu van hanh tam thoi, khong phai lich su bai viet. Job thanh
+cong se bi xoa. Bot khong tai file anh/video ve dia; Telegram `file_id` duoc dung
+de publish lai media bang chinh bot nay.

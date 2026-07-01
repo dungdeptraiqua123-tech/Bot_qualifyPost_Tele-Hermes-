@@ -55,7 +55,7 @@ ensure_user_and_dirs() {
     useradd --system --create-home --home-dir "${BASE_DIR}/home" --shell /bin/bash "${RUN_USER}"
   fi
 
-  mkdir -p "${BASE_DIR}/venvs" "${HERMES_HOME}" "${BASE_DIR}/logs"
+  mkdir -p "${BASE_DIR}/venvs" "${HERMES_HOME}" "${BASE_DIR}/logs" "${BASE_DIR}/data"
   chown -R "${RUN_USER}:${RUN_USER}" "${BASE_DIR}"
 }
 
